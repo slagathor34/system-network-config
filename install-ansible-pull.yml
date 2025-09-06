@@ -1,0 +1,188 @@
+---
+# Playbook to set up ansible-pull with systemd timer for automated network management
+- name: "Setup Ansible-Pull with Systemd Timer"
+  hosts: localhost
+  become: yes
+  vars:
+    repo_url: "https://github.com/YOUR_USERNAME/system-network-config.git"  # Update this URL
+    ansible_pull_user: "root"
+    work_dir: "/opt/ansible-pull-network"
+
+  tasks:
+    - name: "Install required packages"
+      package:
+        name:
+          - ansible
+          - git
+        state: present
+
+    - name: "Create work directory for ansible-pull"
+      file:
+        path: "{{ work_dir }}"
+        state: directory
+        owner: "{{ ansible_pull_user }}"
+        group: "{{ ansible_pull_user }}"
+        mode: '0755'
+
+    - name: "Create systemd service for ansible-pull"
+      copy:
+        content: |
+          [Unit]
+          Description=Ansible Pull Network Configuration
+          After=network-online.target
+          Wants=network-online.target
+          
+          [Service]
+          Type=oneshot
+          User={{ ansible_pull_user }}
+          WorkingDirectory={{ work_dir }}
+          ExecStart=/usr/bin/ansible-pull \
+            --url {{ repo_url }} \
+            --directory {{ work_dir }}/repo \
+            --inventory inventory.ini \
+            --checkout main \
+            --clean \
+            --purge \
+            ansible-pull-main.yml
+          StandardOutput=journal
+          StandardError=journal
+          
+          # Restart policy for transient failures
+          Restart=on-failure
+          RestartSec=300
+          
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/ansible-pull-network.service
+        mode: '0644'
+
+    - name: "Create systemd timer for hourly execution"
+      copy:
+        content: |
+          [Unit]
+          Description=Run Ansible Pull Network Configuration Hourly
+          Requires=ansible-pull-network.service
+          
+          [Timer]
+          OnCalendar=hourly
+          RandomizedDelaySec=300
+          Persistent=true
+          
+          [Install]
+          WantedBy=timers.target
+        dest: /etc/systemd/system/ansible-pull-network.timer
+        mode: '0644'
+
+    - name: "Create logrotate configuration for ansible-pull logs"
+      copy:
+        content: |
+          /var/log/ansible-pull-network.log {
+            weekly
+            rotate 4
+            compress
+            delaycompress
+            missingok
+            notifempty
+            create 0644 root root
+          }
+        dest: /etc/logrotate.d/ansible-pull-network
+        mode: '0644'
+
+    - name: "Reload systemd daemon"
+      systemd:
+        daemon_reload: yes
+
+    - name: "Enable and start ansible-pull timer"
+      systemd:
+        name: ansible-pull-network.timer
+        enabled: yes
+        state: started
+
+    - name: "Create management script"
+      copy:
+        content: |
+          #!/bin/bash
+          # Ansible-Pull Network Management Script
+          
+          TIMER_NAME="ansible-pull-network.timer"
+          SERVICE_NAME="ansible-pull-network.service"
+          LOG_FILE="/var/log/ansible-pull-network.log"
+          
+          case "$1" in
+            status)
+              echo "=== Timer Status ==="
+              systemctl status $TIMER_NAME --no-pager -l
+              echo ""
+              echo "=== Service Status ==="  
+              systemctl status $SERVICE_NAME --no-pager -l
+              echo ""
+              echo "=== Recent Log Entries ==="
+              tail -20 $LOG_FILE 2>/dev/null || echo "No log file found"
+              ;;
+            
+            run-now)
+              echo "Running ansible-pull immediately..."
+              systemctl start $SERVICE_NAME
+              echo "Check logs with: journalctl -u $SERVICE_NAME -f"
+              ;;
+            
+            logs)
+              echo "=== Ansible-Pull Logs ==="
+              tail -50 $LOG_FILE 2>/dev/null || echo "No log file found"
+              echo ""
+              echo "=== Systemd Journal ==="
+              journalctl -u $SERVICE_NAME --no-pager -n 20
+              ;;
+            
+            disable)
+              echo "Disabling ansible-pull timer..."
+              systemctl disable --now $TIMER_NAME
+              echo "Ansible-pull disabled"
+              ;;
+            
+            enable)
+              echo "Enabling ansible-pull timer..."
+              systemctl enable --now $TIMER_NAME
+              echo "Ansible-pull enabled"
+              ;;
+            
+            *)
+              echo "Usage: $0 {status|run-now|logs|disable|enable}"
+              echo ""
+              echo "Commands:"
+              echo "  status   - Show timer/service status and recent logs"
+              echo "  run-now  - Execute ansible-pull immediately"
+              echo "  logs     - Show detailed logs"
+              echo "  disable  - Disable hourly execution"
+              echo "  enable   - Enable hourly execution"
+              exit 1
+              ;;
+          esac
+        dest: /usr/local/bin/manage-ansible-pull
+        mode: '0755'
+
+    - name: "Initial test run"
+      systemd:
+        name: ansible-pull-network.service
+        state: started
+      ignore_errors: yes
+
+    - name: "Display setup completion"
+      debug:
+        msg: |
+          Ansible-pull setup completed!
+          
+          Management commands:
+          - sudo /usr/local/bin/manage-ansible-pull status
+          - sudo /usr/local/bin/manage-ansible-pull run-now
+          - sudo /usr/local/bin/manage-ansible-pull logs
+          - sudo /usr/local/bin/manage-ansible-pull disable
+          - sudo /usr/local/bin/manage-ansible-pull enable
+          
+          The system will now automatically:
+          1. Pull latest configuration from GitHub every hour
+          2. Apply network configuration if needed
+          3. Validate the configuration
+          4. Automatically revert if failures persist > 60 minutes
+          
+          Logs are available at: /var/log/ansible-pull-network.log

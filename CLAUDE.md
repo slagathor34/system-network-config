@@ -11,6 +11,8 @@ This is a system administration repository containing Ansible playbooks for conf
 ### Main Playbooks
 - `configure-802.1ad-bond.yml` - Primary configuration playbook that sets up 802.3ad LACP bonding on Intel 10Gb NICs (enp9s0f0, enp9s0f1) with VLAN configuration
 - `validate-bond-config.yml` - Validation playbook that verifies bond configuration, LACP status, and VLAN interfaces
+- `ansible-pull-main.yml` - Main playbook for ansible-pull execution with automatic validation and revert capabilities
+- `install-ansible-pull.yml` - Setup playbook that configures systemd timer for hourly ansible-pull execution
 - `rollback_script.j2` - Jinja2 template for generating rollback scripts with backup restoration capabilities
 
 ### Configuration Files
@@ -39,6 +41,17 @@ ansible-playbook -i inventory.ini configure-802.1ad-bond.yml
 ### Validate Configuration
 ```bash
 ansible-playbook -i inventory.ini validate-bond-config.yml
+```
+
+### Setup Automated Management (Ansible-Pull)
+```bash
+# Install ansible-pull with hourly execution
+ansible-playbook -i inventory.ini install-ansible-pull.yml
+
+# Management commands
+sudo /usr/local/bin/manage-ansible-pull status
+sudo /usr/local/bin/manage-ansible-pull run-now
+sudo /usr/local/bin/manage-ansible-pull logs
 ```
 
 ### Rollback Configuration
@@ -71,6 +84,8 @@ ip addr show bond0.200
 - **Hardware Validation**: Verifies 10Gb NIC speeds before configuration
 - **Comprehensive Error Handling**: Includes graceful failure handling and detailed logging
 - **Generated Rollback Scripts**: Automatic creation of restoration scripts for each configuration change
+- **Automated Management**: Hourly ansible-pull execution with automatic revert on persistent failures
+- **Failure Detection**: Monitors validation failures and triggers automatic rollback after 60 minutes of persistent issues
 
 ## Development Notes
 
