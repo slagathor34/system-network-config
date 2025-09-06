@@ -7,7 +7,7 @@
   become: yes
   gather_facts: yes
   vars:
-    repo_url: "https://github.com/YOUR_USERNAME/system-network-config.git"  # Update this URL
+    repo_url: "https://github.com/slagathor34/system-network-config.git"
     config_backup_dir: "/etc/netplan/ansible-backup"
     validation_log: "/var/log/ansible-pull-network.log"
     revert_threshold_minutes: 60  # Revert if issues persist for more than 60 minutes
@@ -51,7 +51,7 @@
 
     # Run main configuration only if needed
     - name: "Include main configuration playbook"
-      include: configure-802.1ad-bond.yml
+      include_tasks: configure-802.1ad-bond.yml
       when: needs_config | bool
 
     - name: "Log configuration application"
@@ -62,7 +62,7 @@
 
     # Post-validation: Verify network state after changes
     - name: "Post-validation - Run validation playbook"
-      include: validate-bond-config.yml
+      include_tasks: validate-bond-config.yml
 
     - name: "Check validation results"
       fail:

@@ -33,25 +33,32 @@ This is a system administration repository containing Ansible playbooks for conf
 
 ## Commands
 
-### Apply Configuration
+### Core Playbook Operations
 ```bash
+# Apply main configuration (idempotent)
 ansible-playbook -i inventory.ini configure-802.1ad-bond.yml
-```
 
-### Validate Configuration
-```bash
+# Validate current configuration
 ansible-playbook -i inventory.ini validate-bond-config.yml
+
+# Setup automated management with hourly execution
+ansible-playbook -i inventory.ini install-ansible-pull.yml
 ```
 
-### Setup Automated Management (Ansible-Pull)
+### Automated Management Commands
 ```bash
-# Install ansible-pull with hourly execution
-ansible-playbook -i inventory.ini install-ansible-pull.yml
-
-# Management commands
+# Check status and recent logs
 sudo /usr/local/bin/manage-ansible-pull status
+
+# Execute immediately (bypass timer)
 sudo /usr/local/bin/manage-ansible-pull run-now
+
+# View detailed logs
 sudo /usr/local/bin/manage-ansible-pull logs
+
+# Disable/enable automatic execution
+sudo /usr/local/bin/manage-ansible-pull disable
+sudo /usr/local/bin/manage-ansible-pull enable
 ```
 
 ### Rollback Configuration
@@ -75,6 +82,13 @@ nmcli connection show
 # Check VLAN status
 ip link show bond0.200
 ip addr show bond0.200
+
+# Check hardware speeds
+ethtool enp9s0f0 | grep Speed
+ethtool enp9s0f1 | grep Speed
+
+# Monitor real-time bond activity
+watch -n 1 'cat /proc/net/bonding/bond0'
 ```
 
 ## Safety Features
@@ -86,6 +100,36 @@ ip addr show bond0.200
 - **Generated Rollback Scripts**: Automatic creation of restoration scripts for each configuration change
 - **Automated Management**: Hourly ansible-pull execution with automatic revert on persistent failures
 - **Failure Detection**: Monitors validation failures and triggers automatic rollback after 60 minutes of persistent issues
+- **Logging**: Comprehensive logging to `/var/log/ansible-pull-network.log` with logrotate configuration
+
+## Architecture Overview
+
+The system uses a layered approach for network configuration management:
+
+1. **Configuration Layer**: Ansible playbooks define desired network state
+2. **Automation Layer**: ansible-pull provides continuous configuration management
+3. **Validation Layer**: Comprehensive validation ensures configuration correctness
+4. **Safety Layer**: Backup and rollback mechanisms provide fail-safe operations
+
+### Key Design Patterns
+
+- **Idempotency**: All operations check current state before making changes
+- **Fail-Safe Operations**: Every configuration change creates automatic rollback capability
+- **Continuous Validation**: ansible-pull monitors and maintains configuration compliance
+- **Timestamped Backups**: All changes are versioned with Unix timestamps for easy tracking
+
+## Repository Structure
+
+```
+.
+├── configure-802.1ad-bond.yml    # Primary configuration playbook
+├── validate-bond-config.yml      # Validation and health checks
+├── ansible-pull-main.yml         # Continuous management (runs hourly)
+├── install-ansible-pull.yml      # One-time setup for automation
+├── rollback_script.j2            # Jinja2 template for rollback scripts
+├── inventory.ini                 # Ansible inventory (localhost)
+└── .claude/settings.local.json   # Claude Code permissions for system access
+```
 
 ## Development Notes
 
@@ -93,3 +137,63 @@ ip addr show bond0.200
 - Configuration changes are backed up before application
 - VLAN 500 requires special handling as it's bridged to bridgeLab
 - All network changes include verification steps to ensure proper operation
+- The repository URL in `ansible-pull-main.yml` must be updated after GitHub setup
+- Backup timestamps use `ansible_date_time.epoch` for consistency across operations
+
+## Testing and Validation
+
+### Syntax Validation
+```bash
+# Check playbook syntax
+ansible-playbook --syntax-check -i inventory.ini configure-802.1ad-bond.yml
+ansible-playbook --syntax-check -i inventory.ini validate-bond-config.yml
+```
+
+### Dry Run Testing
+```bash
+# Test configuration changes without applying
+ansible-playbook -i inventory.ini configure-802.1ad-bond.yml --check
+```
+
+### Post-Configuration Validation
+Always run validation after configuration changes:
+```bash
+ansible-playbook -i inventory.ini validate-bond-config.yml
+```
+
+## GitHub Setup and Automation Workflow
+
+### Initial GitHub Repository Setup
+1. Create repository named `system-network-config` on GitHub (public visibility)
+2. Update repository URLs in both `ansible-pull-main.yml` and `install-ansible-pull.yml`
+3. Push code to GitHub: `git push -u origin main`
+4. Run setup: `ansible-playbook -i inventory.ini install-ansible-pull.yml`
+
+### Emergency Procedures
+```bash
+# Manual rollback (find latest backup first)
+ls -1t /etc/netplan/ansible-backup/
+sudo /etc/netplan/ansible-backup/{timestamp}/rollback.sh restore
+
+# Disable automation if needed
+sudo /usr/local/bin/manage-ansible-pull disable
+```
+
+## Critical Configuration Values
+
+- **Repository URL**: `https://github.com/slagathor34/system-network-config.git` (update in both ansible-pull files)
+- **Bond Interface**: bond0 (802.3ad LACP mode)
+- **Physical NICs**: enp9s0f0, enp9s0f1 (Intel 82599ES 10Gb)
+- **System MAC**: 80:61:5F:11:00:BD
+- **VLAN IDs**: 200 (DHCP), 500 (bridged to bridgeLab), 700 (DHCP)
+- **Backup Location**: `/etc/netplan/ansible-backup/`
+- **Log File**: `/var/log/ansible-pull-network.log`
+
+## Architecture Dependencies
+
+The playbooks assume:
+- NetworkManager is the primary network management service
+- Netplan is used for static configuration
+- SystemD timers are available for ansible-pull automation
+- Both physical NICs support 10Gb speeds and are properly cabled
+- Switch ports are configured for 802.3ad LACP bonding
