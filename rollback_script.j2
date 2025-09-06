@@ -1,0 +1,76 @@
+#!/bin/bash
+# Rollback script for 802.1ad Bond Configuration
+# Generated on {{ ansible_date_time.iso8601 }}
+# Backup location: {{ backup_path }}
+
+set -euo pipefail
+
+BACKUP_PATH="{{ backup_path }}"
+BOND_INTERFACE="{{ bond_interface }}"
+PRIMARY_NIC="{{ primary_nic }}"
+SECONDARY_NIC="{{ secondary_nic }}"
+
+echo "Starting rollback of bond configuration..."
+echo "Backup path: $BACKUP_PATH"
+
+# Function to restore from backup
+restore_config() {
+    echo "Restoring NetworkManager configurations..."
+    
+    # Remove current bond and VLAN connections
+    echo "Removing current bond and VLAN connections..."
+    nmcli connection delete "$BOND_INTERFACE" 2>/dev/null || true
+{% for vlan in vlans %}
+    nmcli connection delete "$BOND_INTERFACE.{{ vlan.id }}" 2>/dev/null || true
+{% endfor %}
+    nmcli connection delete "bond-slave-$PRIMARY_NIC" 2>/dev/null || true
+    nmcli connection delete "bond-slave-$SECONDARY_NIC" 2>/dev/null || true
+    
+    # Restore original netplan configuration
+    if [ -d "$BACKUP_PATH/netplan/" ]; then
+        echo "Restoring netplan configuration..."
+        cp -r "$BACKUP_PATH/netplan/"* /etc/netplan/
+        netplan apply
+    fi
+    
+    # Restore original NetworkManager connections if available
+    if [ -f "$BACKUP_PATH/nm_connections.txt" ]; then
+        echo "Original NetworkManager connections:"
+        cat "$BACKUP_PATH/nm_connections.txt"
+    fi
+    
+    echo "Rollback completed successfully!"
+    echo "You may need to manually reconfigure network connections."
+}
+
+# Function to verify current state
+verify_current_state() {
+    echo "Current network state:"
+    echo "Bond interface status:"
+    ip link show "$BOND_INTERFACE" 2>/dev/null || echo "Bond interface not found"
+    
+    echo "NIC status:"
+    ip link show "$PRIMARY_NIC" 2>/dev/null || echo "Primary NIC not found"
+    ip link show "$SECONDARY_NIC" 2>/dev/null || echo "Secondary NIC not found"
+    
+    echo "NetworkManager connections:"
+    nmcli connection show | grep -E "(bond|vlan|$PRIMARY_NIC|$SECONDARY_NIC)" || echo "No relevant connections found"
+}
+
+# Main execution
+case "${1:-}" in
+    "verify")
+        verify_current_state
+        ;;
+    "restore")
+        verify_current_state
+        echo "Proceeding with rollback..."
+        restore_config
+        ;;
+    *)
+        echo "Usage: $0 {verify|restore}"
+        echo "  verify  - Show current network configuration"
+        echo "  restore - Rollback to pre-ansible configuration"
+        exit 1
+        ;;
+esac

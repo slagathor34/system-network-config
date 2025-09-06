@@ -1,0 +1,69 @@
+---
+- name: Validate 802.1ad Bond Configuration
+  hosts: localhost
+  become: yes
+  vars:
+    bond_interface: "bond0"
+    primary_nic: "enp9s0f0"
+    secondary_nic: "enp9s0f1"
+    expected_vlans: [200, 500, 700]
+
+  tasks:
+    - name: Check bond interface exists and is up
+      shell: "ip link show {{ bond_interface }} | grep 'state UP'"
+      register: bond_status
+      changed_when: false
+
+    - name: Verify bond mode is 802.3ad
+      shell: "cat /proc/net/bonding/{{ bond_interface }} | grep '802.3ad'"
+      register: bond_mode
+      changed_when: false
+
+    - name: Check LACP is active
+      shell: "cat /proc/net/bonding/{{ bond_interface }} | grep 'LACP active: on'"
+      register: lacp_status
+      changed_when: false
+
+    - name: Verify both NICs are slaves and up
+      shell: |
+        cat /proc/net/bonding/{{ bond_interface }} | grep -A5 "Slave Interface: {{ item }}" | grep "MII Status: up"
+      with_items:
+        - "{{ primary_nic }}"
+        - "{{ secondary_nic }}"
+      register: nic_status
+      changed_when: false
+
+    - name: Check VLAN interfaces are present and up
+      shell: "ip link show {{ bond_interface }}.{{ item }} | grep 'state UP'"
+      with_items: "{{ expected_vlans }}"
+      register: vlan_status
+      changed_when: false
+
+    - name: Verify NIC speeds are 10Gb
+      shell: "ethtool {{ item }} | grep 'Speed: 10000'"
+      with_items:
+        - "{{ primary_nic }}"
+        - "{{ secondary_nic }}"
+      register: speed_check
+      changed_when: false
+
+    - name: Display validation results
+      debug:
+        msg: |
+          Bond Configuration Validation Results:
+          =====================================
+          Bond Interface: {{ bond_status.stdout if bond_status.rc == 0 else 'FAILED' }}
+          Bond Mode: {{ 'IEEE 802.3ad (LACP)' if bond_mode.rc == 0 else 'FAILED' }}
+          LACP Status: {{ 'Active' if lacp_status.rc == 0 else 'FAILED' }}
+          NIC Status: {{ 'All NICs UP' if nic_status.results | map(attribute='rc') | list | max == 0 else 'SOME NICS DOWN' }}
+          VLAN Status: {{ 'All VLANs UP' if vlan_status.results | map(attribute='rc') | list | max == 0 else 'SOME VLANS DOWN' }}
+          NIC Speeds: {{ '10Gb Verified' if speed_check.results | map(attribute='rc') | list | max == 0 else 'SPEED ISSUE' }}
+
+    - name: Show detailed bond information
+      shell: "cat /proc/net/bonding/{{ bond_interface }}"
+      register: detailed_bond_info
+      changed_when: false
+
+    - name: Display detailed bond information
+      debug:
+        var: detailed_bond_info.stdout_lines

@@ -1,0 +1,320 @@
+---
+- name: Configure 802.1ad Bond on 10Gb NICs
+  hosts: localhost
+  become: yes
+  vars:
+    # Current system configuration
+    bond_interface: "bond0"
+    bond_mode: "802.3ad"
+    bond_miimon: "100"
+    bond_updelay: "0"
+    bond_downdelay: "0"
+    bond_mac: "80:61:5F:11:00:BD"
+    
+    # 10Gb NICs configuration
+    primary_nic: "enp9s0f0"
+    secondary_nic: "enp9s0f1"
+    
+    # VLAN configurations
+    vlans:
+      - id: 200
+        dhcp4: true
+        dhcp6: true
+      - id: 500
+        dhcp4: false
+        dhcp6: false
+        bridge: "bridgeLab"
+      - id: 700
+        dhcp4: true
+        dhcp6: true
+    
+    # Backup directory for rollback
+    backup_dir: "/etc/netplan/ansible-backup"
+    timestamp: "{{ ansible_date_time.epoch }}"
+
+  tasks:
+    - name: Create backup directory
+      file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Check if backup already exists for this session
+      stat:
+        path: "{{ backup_dir }}/{{ timestamp }}"
+      register: backup_exists
+
+    - name: Backup current netplan configuration
+      shell: |
+        mkdir -p "{{ backup_dir }}/{{ timestamp }}/netplan"
+        cp -r /etc/netplan/* "{{ backup_dir }}/{{ timestamp }}/netplan/" 2>/dev/null || true
+        ls -la "{{ backup_dir }}/{{ timestamp }}/netplan/" > "{{ backup_dir }}/{{ timestamp }}/backup_manifest.txt"
+      register: backup_result
+      when: not backup_exists.stat.exists
+      changed_when: true
+
+    - name: Store current NetworkManager connections for rollback
+      shell: nmcli -t connection show | grep -E "(bond0|enp9s0f0|enp9s0f1|bond0\.)" > {{ backup_dir }}/{{ timestamp }}/nm_connections.txt
+      ignore_errors: yes
+      when: not backup_exists.stat.exists
+      changed_when: false
+
+    - name: Check if bond0 already exists
+      shell: nmcli connection show bond0
+      register: bond_exists
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Check current bond configuration
+      shell: |
+        if [ -f /proc/net/bonding/bond0 ]; then
+          cat /proc/net/bonding/bond0 | grep -E "(Bonding Mode|Transmit Hash Policy|MII Polling Interval)"
+        fi
+      register: current_bond_config
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Verify 10Gb NICs are available
+      shell: "ip link show {{ item }}"
+      register: nic_check
+      with_items:
+        - "{{ primary_nic }}"
+        - "{{ secondary_nic }}"
+      changed_when: false
+
+    - name: Get current NIC speeds
+      shell: |
+        ethtool {{ item }} | grep Speed || echo "Speed: Unknown"
+      register: nic_speeds
+      with_items:
+        - "{{ primary_nic }}"
+        - "{{ secondary_nic }}"
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Verify NICs are 10Gb
+      fail:
+        msg: "NIC {{ item.item }} is not running at 10Gb speed: {{ item.stdout }}"
+      when: 
+        - not ansible_check_mode
+        - "'10000Mb/s' not in item.stdout and 'Unknown' not in item.stdout"
+      with_items: "{{ nic_speeds.results }}"
+
+    - name: Create bond0 connection if it doesn't exist
+      nmcli:
+        conn_name: "{{ bond_interface }}"
+        type: bond
+        ifname: "{{ bond_interface }}"
+        mode: "{{ bond_mode }}"
+        miimon: "{{ bond_miimon }}"
+        updelay: "{{ bond_updelay }}"
+        downdelay: "{{ bond_downdelay }}"
+        mac: "{{ bond_mac }}"
+        ip4: 'auto'
+        ip6: 'auto'
+        state: present
+      when: bond_exists.rc != 0
+
+    - name: Check if bond0 configuration needs updating
+      shell: |
+        nmcli -t connection show {{ bond_interface }} | grep -E '(bond.options|802.3ad)' | 
+        grep -q 'mode={{ bond_mode }}' && 
+        nmcli -t connection show {{ bond_interface }} | grep -q 'miimon={{ bond_miimon }}'
+      register: bond_config_check
+      when: bond_exists.rc == 0
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Configure bond0 connection parameters
+      nmcli:
+        conn_name: "{{ bond_interface }}"
+        type: bond
+        mode: "{{ bond_mode }}"
+        miimon: "{{ bond_miimon }}"
+        updelay: "{{ bond_updelay }}"
+        downdelay: "{{ bond_downdelay }}"
+        mac: "{{ bond_mac }}"
+        state: present
+      when: 
+        - bond_exists.rc == 0
+        - bond_config_check is defined and bond_config_check.rc != 0
+
+    - name: Check if primary NIC is already a bond slave
+      shell: "nmcli -t connection show | grep 'bond-slave-{{ primary_nic }}'"
+      register: primary_slave_exists
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Configure primary NIC as bond slave
+      nmcli:
+        conn_name: "bond-slave-{{ primary_nic }}"
+        type: ethernet
+        ifname: "{{ primary_nic }}"
+        master: "{{ bond_interface }}"
+        slave_type: bond
+        state: present
+      when: primary_slave_exists.rc != 0
+
+    - name: Check if secondary NIC is already a bond slave
+      shell: "nmcli -t connection show | grep 'bond-slave-{{ secondary_nic }}'"
+      register: secondary_slave_exists
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Configure secondary NIC as bond slave
+      nmcli:
+        conn_name: "bond-slave-{{ secondary_nic }}"
+        type: ethernet
+        ifname: "{{ secondary_nic }}"
+        master: "{{ bond_interface }}"
+        slave_type: bond
+        state: present
+      when: secondary_slave_exists.rc != 0
+
+    - name: Check if VLAN interfaces exist (except 500)
+      shell: "nmcli -t connection show | grep '{{ bond_interface }}.{{ item.id }}'"
+      with_items: "{{ vlans }}"
+      when: item.id != 500
+      register: vlan_exists
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Configure VLAN interfaces (except 500)
+      nmcli:
+        conn_name: "{{ bond_interface }}.{{ item.item.id }}"
+        type: vlan
+        vlandev: "{{ bond_interface }}"
+        vlanid: "{{ item.item.id }}"
+        method4: "{{ 'auto' if item.item.dhcp4 else 'disabled' }}"
+        method6: "{{ 'auto' if item.item.dhcp6 else 'disabled' }}"
+        state: present
+      with_items: "{{ vlan_exists.results | default([]) }}"
+      when: 
+        - item.item.id is defined
+        - item.item.id != 500
+        - item.rc != 0
+
+    - name: Check if VLAN 500 bridge configuration exists
+      shell: "nmcli -t connection show | grep '{{ bond_interface }}.500'"
+      register: vlan500_exists
+      when: vlans | selectattr('id', 'equalto', 500) | selectattr('bridge', 'defined') | list | length > 0
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Configure VLAN 500 as bridge slave (special case)
+      nmcli:
+        conn_name: "{{ bond_interface }}.500"
+        master: "bridgeLab"
+        slave_type: bridge
+        state: present
+      when: 
+        - vlans | selectattr('id', 'equalto', 500) | selectattr('bridge', 'defined') | list | length > 0
+        - vlan500_exists is defined and vlan500_exists.rc != 0
+
+    - name: Bring up bond interface
+      nmcli:
+        conn_name: "{{ bond_interface }}"
+        state: present
+      notify: verify_bond_status
+
+    - name: Check bond slave connection status
+      shell: "nmcli -t connection show --active | grep 'bond-slave-{{ item }}'"
+      with_items:
+        - "{{ primary_nic }}"
+        - "{{ secondary_nic }}"
+      register: slave_status
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Bring up bond slave connections
+      shell: "nmcli connection up bond-slave-{{ item.item }}"
+      with_items: "{{ slave_status.results }}"
+      when: item.rc != 0
+      ignore_errors: yes
+
+    - name: Check VLAN connection status (except 500)
+      shell: "nmcli -t connection show --active | grep '{{ bond_interface }}.{{ item.id }}'"
+      with_items: "{{ vlans }}"
+      when: item.id != 500
+      register: vlan_status
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Bring up VLAN connections (except 500)
+      shell: "nmcli connection up {{ bond_interface }}.{{ item.item.id }}"
+      with_items: "{{ vlan_status.results | default([]) }}"
+      when: 
+        - item.item.id is defined
+        - item.item.id != 500
+        - item.rc != 0
+      ignore_errors: yes
+
+    - name: Check VLAN 500 connection status
+      shell: "nmcli -t connection show --active | grep '{{ bond_interface }}.500'"
+      register: vlan500_status
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Bring up VLAN 500 connection
+      shell: "nmcli connection up {{ bond_interface }}.500"
+      when: vlan500_status.rc != 0
+      ignore_errors: yes
+
+    - name: Wait for interfaces to be fully up
+      wait_for:
+        timeout: 10
+      delegate_to: localhost
+
+    - name: Verify bond is operational
+      shell: |
+        cat /proc/net/bonding/bond0 | grep -q "802.3ad" &&
+        cat /proc/net/bonding/bond0 | grep -q "MII Status: up" &&
+        cat /proc/net/bonding/bond0 | grep -A5 "Slave Interface: {{ primary_nic }}" | grep -q "MII Status: up" &&
+        cat /proc/net/bonding/bond0 | grep -A5 "Slave Interface: {{ secondary_nic }}" | grep -q "MII Status: up"
+      register: bond_status_check
+      changed_when: false
+
+    - name: Verify VLAN interfaces are up
+      shell: "ip link show {{ bond_interface }}.{{ item.id }} | grep -q 'state UP'"
+      with_items: "{{ vlans }}"
+      register: vlan_status_check
+      changed_when: false
+
+    - name: Create rollback script
+      template:
+        src: rollback_script.j2
+        dest: "{{ backup_dir }}/{{ timestamp }}/rollback.sh"
+        mode: '0755'
+      vars:
+        backup_path: "{{ backup_dir }}/{{ timestamp }}"
+      when: not backup_exists.stat.exists
+
+  handlers:
+    - name: verify_bond_status
+      shell: cat /proc/net/bonding/bond0
+      register: final_bond_status
+      listen: "verify_bond_status"
+
+  post_tasks:
+    - name: Display configuration summary
+      debug:
+        msg: |
+          Configuration Summary:
+          - Bond Interface: {{ bond_interface }}
+          - Mode: {{ bond_mode }} (LACP)
+          - Slave NICs: {{ primary_nic }}, {{ secondary_nic }}
+          - VLANs configured: {{ vlans | map(attribute='id') | list | join(', ') }}
+          - Backup created: {{ backup_dir }}/{{ timestamp }}
+          - Rollback script: {{ backup_dir }}/{{ timestamp }}/rollback.sh
+
+    - name: Save configuration state
+      copy:
+        content: |
+          # Configuration applied on {{ ansible_date_time.iso8601 }}
+          BOND_INTERFACE={{ bond_interface }}
+          BOND_MODE={{ bond_mode }}
+          PRIMARY_NIC={{ primary_nic }}
+          SECONDARY_NIC={{ secondary_nic }}
+          BACKUP_DIR={{ backup_dir }}/{{ timestamp }}
+        dest: "{{ backup_dir }}/{{ timestamp }}/config_state.conf"
+      when: not backup_exists.stat.exists

@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(lsblk:*)",
+      "Read(//dev/**)",
+      "Bash(lspci:*)",
+      "Bash(sudo nvme:*)",
+      "Bash(dmesg:*)",
+      "Bash(sudo dmesg:*)",
+      "Read(//sys/class/nvme/**)",
+      "Read(//sys/bus/pci/devices/**)",
+      "Bash(ip link:*)",
+      "Bash(ip addr:*)",
+      "Read(//proc/26869/net/vlan/**)",
+      "Read(//etc/netplan/**)",
+      "Bash(systemctl status:*)",
+      "Bash(nmcli connection:*)",
+      "Bash(nmcli device:*)",
+      "Read(//proc/26869/net/bonding/**)",
+      "Read(//proc/34320/net/bonding/**)",
+      "Bash(sudo cat:*)",
+      "Bash(ansible-playbook:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
