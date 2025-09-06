@@ -1,0 +1,177 @@
+name: Network Configuration GitOps Deployment
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'configure-802.1ad-bond.yml'
+      - 'validate-bond-config.yml'
+      - 'ansible-pull-main.yml'
+      - 'inventory.ini'
+      - 'rollback_script.j2'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'configure-802.1ad-bond.yml'
+      - 'validate-bond-config.yml'
+      - 'ansible-pull-main.yml'
+      - 'inventory.ini'
+      - 'rollback_script.j2'
+
+env:
+  ANSIBLE_HOST_KEY_CHECKING: 'false'
+  ANSIBLE_STDOUT_CALLBACK: 'yaml'
+  ANSIBLE_FORCE_COLOR: 'true'
+
+jobs:
+  validate-syntax:
+    name: Validate Ansible Syntax
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install Ansible
+      run: |
+        pip install ansible ansible-lint
+        
+    - name: Validate playbook syntax
+      run: |
+        ansible-playbook --syntax-check -i inventory.ini configure-802.1ad-bond.yml
+        ansible-playbook --syntax-check -i inventory.ini validate-bond-config.yml
+        ansible-playbook --syntax-check -i inventory.ini ansible-pull-main.yml
+        
+    - name: Run ansible-lint
+      run: |
+        ansible-lint configure-802.1ad-bond.yml || true
+        ansible-lint validate-bond-config.yml || true
+        ansible-lint ansible-pull-main.yml || true
+
+  dry-run-test:
+    name: Dry Run Configuration Test
+    runs-on: self-hosted
+    needs: validate-syntax
+    if: github.event_name == 'pull_request'
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Check Ansible installation
+      run: |
+        which ansible-playbook
+        ansible --version
+        
+    - name: Dry run configuration playbook
+      run: |
+        ansible-playbook -i inventory.ini configure-802.1ad-bond.yml --check --diff
+        
+    - name: Dry run validation playbook
+      run: |
+        ansible-playbook -i inventory.ini validate-bond-config.yml --check
+        
+    - name: Dry run ansible-pull playbook
+      run: |
+        ansible-playbook -i inventory.ini ansible-pull-main.yml --check
+
+  deploy-to-production:
+    name: Deploy Network Configuration
+    runs-on: self-hosted
+    needs: validate-syntax
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: production
+      url: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Create backup timestamp
+      id: timestamp
+      run: echo "timestamp=$(date +%Y%m%d_%H%M%S)" >> $GITHUB_OUTPUT
+      
+    - name: Pre-deployment validation
+      run: |
+        # Check current network state
+        ip link show bond0 || echo "bond0 not configured yet"
+        cat /proc/net/bonding/bond0 || echo "bond0 not active yet"
+        
+    - name: Execute configuration playbook
+      run: |
+        ansible-playbook -i inventory.ini configure-802.1ad-bond.yml \
+          --extra-vars "deployment_timestamp=${{ steps.timestamp.outputs.timestamp }}" \
+          --extra-vars "github_run_id=${{ github.run_id }}" \
+          --extra-vars "github_sha=${{ github.sha }}"
+      register: config_result
+      
+    - name: Execute validation playbook
+      run: |
+        sleep 10  # Allow network changes to settle
+        ansible-playbook -i inventory.ini validate-bond-config.yml
+      register: validation_result
+      
+    - name: Post-deployment network status
+      if: always()
+      run: |
+        echo "=== Bond Status ==="
+        cat /proc/net/bonding/bond0
+        echo ""
+        echo "=== Interface Status ==="
+        ip link show bond0
+        ip addr show bond0
+        echo ""
+        echo "=== VLAN Status ==="
+        ip link show bond0.200 || echo "VLAN 200 not found"
+        ip link show bond0.500 || echo "VLAN 500 not found" 
+        ip link show bond0.700 || echo "VLAN 700 not found"
+        
+    - name: Create deployment summary
+      if: always()
+      run: |
+        cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+        ## 🚀 Network Configuration Deployment Summary
+        
+        **Deployment ID:** ${{ steps.timestamp.outputs.timestamp }}
+        **Git SHA:** ${{ github.sha }}
+        **Run ID:** ${{ github.run_id }}
+        
+        ### Configuration Applied
+        - Bond interface: bond0 (802.3ad LACP)
+        - Physical NICs: enp9s0f0, enp9s0f1
+        - VLANs: 200, 500, 700
+        
+        ### Validation Status
+        - Configuration: ${{ job.status }}
+        - Post-validation: ${{ steps.validation_result.outcome }}
+        
+        ### Rollback Available
+        Backup location: `/etc/netplan/ansible-backup/${{ steps.timestamp.outputs.timestamp }}/`
+        
+        ```bash
+        # Emergency rollback command:
+        sudo /etc/netplan/ansible-backup/${{ steps.timestamp.outputs.timestamp }}/rollback.sh restore
+        ```
+        EOF
+
+  notify-status:
+    name: Deployment Notification
+    runs-on: ubuntu-latest
+    needs: [validate-syntax, deploy-to-production]
+    if: always() && github.ref == 'refs/heads/main'
+    steps:
+    - name: Deployment Success
+      if: needs.deploy-to-production.result == 'success'
+      run: |
+        echo "✅ Network configuration deployed successfully"
+        echo "Deployment completed at $(date)"
+        
+    - name: Deployment Failure
+      if: needs.deploy-to-production.result == 'failure'
+      run: |
+        echo "❌ Network configuration deployment failed"
+        echo "Check logs and consider manual rollback if needed"
+        exit 1

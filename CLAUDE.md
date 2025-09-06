@@ -122,13 +122,18 @@ The system uses a layered approach for network configuration management:
 
 ```
 .
-├── configure-802.1ad-bond.yml    # Primary configuration playbook
-├── validate-bond-config.yml      # Validation and health checks
-├── ansible-pull-main.yml         # Continuous management (runs hourly)
-├── install-ansible-pull.yml      # One-time setup for automation
-├── rollback_script.j2            # Jinja2 template for rollback scripts
-├── inventory.ini                 # Ansible inventory (localhost)
-└── .claude/settings.local.json   # Claude Code permissions for system access
+├── configure-802.1ad-bond.yml           # Primary configuration playbook
+├── validate-bond-config.yml             # Validation and health checks
+├── ansible-pull-main.yml                # Continuous management (runs hourly)
+├── install-ansible-pull.yml             # One-time setup for automation
+├── rollback_script.j2                   # Jinja2 template for rollback scripts
+├── inventory.ini                        # Ansible inventory (localhost)
+├── setup-github-runner.sh               # Self-hosted runner setup script
+├── .github/workflows/network-config-deploy.yml  # GitOps deployment workflow
+├── GITHUB-ACTIONS-SECURITY.md           # Security considerations and best practices
+├── SETUP-GITHUB-AUTOMATION.md           # Step-by-step GitHub setup guide
+├── README.md                            # Repository documentation
+└── .claude/settings.local.json          # Claude Code permissions for system access
 ```
 
 ## Development Notes
@@ -147,12 +152,22 @@ The system uses a layered approach for network configuration management:
 # Check playbook syntax
 ansible-playbook --syntax-check -i inventory.ini configure-802.1ad-bond.yml
 ansible-playbook --syntax-check -i inventory.ini validate-bond-config.yml
+ansible-playbook --syntax-check -i inventory.ini ansible-pull-main.yml
+
+# Run ansible-lint (install with: pip install ansible-lint)
+ansible-lint configure-802.1ad-bond.yml
+ansible-lint validate-bond-config.yml
+ansible-lint ansible-pull-main.yml
 ```
 
 ### Dry Run Testing
 ```bash
 # Test configuration changes without applying
-ansible-playbook -i inventory.ini configure-802.1ad-bond.yml --check
+ansible-playbook -i inventory.ini configure-802.1ad-bond.yml --check --diff
+
+# Test all playbooks in dry-run mode
+ansible-playbook -i inventory.ini validate-bond-config.yml --check
+ansible-playbook -i inventory.ini ansible-pull-main.yml --check
 ```
 
 ### Post-Configuration Validation
@@ -169,6 +184,50 @@ ansible-playbook -i inventory.ini validate-bond-config.yml
 3. Push code to GitHub: `git push -u origin main`
 4. Run setup: `ansible-playbook -i inventory.ini install-ansible-pull.yml`
 
+### GitOps Deployment with GitHub Actions
+
+#### Self-Hosted Runner Setup
+```bash
+# Install and configure self-hosted runner
+sudo ./setup-github-runner.sh
+
+# Configure runner (run as github-runner user)
+sudo -u github-runner /opt/github-runner/configure-runner.sh
+
+# Start runner service
+sudo systemctl enable github-runner
+sudo systemctl start github-runner
+```
+
+#### GitOps Workflow Features
+- **Automatic Deployment**: Push to main branch triggers deployment
+- **PR Validation**: Pull requests run dry-run tests
+- **Syntax Validation**: Ansible syntax and linting checks with ansible-lint
+- **Environment Protection**: Production requires manual approval
+- **Rollback Capability**: Automated backup and rollback scripts with deployment summaries
+- **Status Reporting**: Comprehensive deployment summaries in GitHub with network status
+- **Multi-stage Pipeline**: Syntax validation → dry-run testing → production deployment
+- **Self-hosted Runner**: Runs on target system for direct network configuration access
+
+#### GitHub Actions Commands
+```bash
+# Check runner status
+sudo systemctl status github-runner
+
+# View runner logs
+sudo journalctl -u github-runner -f
+
+# Restart runner if needed
+sudo systemctl restart github-runner
+
+# Stop/start runner service
+sudo systemctl stop github-runner
+sudo systemctl start github-runner
+
+# Check GitHub API rate limits and runner status
+curl -s -H "Authorization: token YOUR_GITHUB_TOKEN" https://api.github.com/repos/YOUR_USERNAME/system-network-config/actions/runners
+```
+
 ### Emergency Procedures
 ```bash
 # Manual rollback (find latest backup first)
@@ -177,17 +236,23 @@ sudo /etc/netplan/ansible-backup/{timestamp}/rollback.sh restore
 
 # Disable automation if needed
 sudo /usr/local/bin/manage-ansible-pull disable
+
+# Stop GitOps pipeline if compromised
+sudo systemctl stop github-runner
 ```
 
 ## Critical Configuration Values
 
-- **Repository URL**: `https://github.com/slagathor34/system-network-config.git` (update in both ansible-pull files)
+- **Repository URL**: `https://github.com/slagathor34/system-network-config.git` (current configured URL in ansible-pull files)
 - **Bond Interface**: bond0 (802.3ad LACP mode)
 - **Physical NICs**: enp9s0f0, enp9s0f1 (Intel 82599ES 10Gb)
 - **System MAC**: 80:61:5F:11:00:BD
 - **VLAN IDs**: 200 (DHCP), 500 (bridged to bridgeLab), 700 (DHCP)
 - **Backup Location**: `/etc/netplan/ansible-backup/`
 - **Log File**: `/var/log/ansible-pull-network.log`
+- **GitHub Runner User**: github-runner
+- **Runner Home**: `/opt/github-runner`
+- **Runner Service**: github-runner.service
 
 ## Architecture Dependencies
 

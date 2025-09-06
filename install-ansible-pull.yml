@@ -4,7 +4,7 @@
   hosts: localhost
   become: yes
   vars:
-    repo_url: "https://github.com/YOUR_USERNAME/system-network-config.git"  # Update this URL
+    repo_url: "https://github.com/slagathor34/system-network-config.git"
     ansible_pull_user: "root"
     work_dir: "/opt/ansible-pull-network"
 

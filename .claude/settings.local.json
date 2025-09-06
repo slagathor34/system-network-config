@@ -25,7 +25,17 @@
       "Bash(git commit:*)",
       "Bash(git config:*)",
       "Bash(gh repo create:*)",
-      "Bash(echo \"Please create a GitHub repository manually with these details:\nRepository name: system-network-config\nDescription: Ansible playbooks for 802.1ad bond configuration on 10Gb NICs with automatic validation and rollback\nVisibility: Public\n\nThen add the remote origin with:\ngit remote add origin https://github.com/YOUR_USERNAME/system-network-config.git\ngit branch -M main\ngit push -u origin main\")"
+      "Bash(echo \"Please create a GitHub repository manually with these details:\nRepository name: system-network-config\nDescription: Ansible playbooks for 802.1ad bond configuration on 10Gb NICs with automatic validation and rollback\nVisibility: Public\n\nThen add the remote origin with:\ngit remote add origin https://github.com/YOUR_USERNAME/system-network-config.git\ngit branch -M main\ngit push -u origin main\")",
+      "Bash(git remote set-url:*)",
+      "Read(//usr/local/bin/**)",
+      "Bash(systemctl:*)",
+      "Read(//etc/systemd/system/**)",
+      "Read(//var/log/**)",
+      "Bash(sudo:*)",
+      "Bash(journalctl:*)",
+      "Bash(git push:*)",
+      "Bash(chmod:*)",
+      "Read(//opt/ansible-pull-network/**)"
     ],
     "deny": [],
     "ask": []
