@@ -50,8 +50,9 @@
           }}
 
     # Run main configuration only if needed
-    - name: "Include main configuration playbook"
-      include_tasks: configure-802.1ad-bond.yml
+    - name: "Run main configuration playbook"
+      shell: ansible-playbook -i inventory.ini configure-802.1ad-bond.yml
+      register: config_result
       when: needs_config | bool
 
     - name: "Log configuration application"
@@ -62,7 +63,9 @@
 
     # Post-validation: Verify network state after changes
     - name: "Post-validation - Run validation playbook"
-      include_tasks: validate-bond-config.yml
+      shell: ansible-playbook -i inventory.ini validate-bond-config.yml
+      register: validation_result
+      failed_when: validation_result.rc != 0
 
     - name: "Check validation results"
       fail:
