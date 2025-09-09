@@ -56,6 +56,9 @@
         - name: "NUT (Network UPS Tools) management"
           include_tasks: tasks/hourly/nut-management.yml
 
+        - name: "Python 3.12 system management"
+          include_tasks: tasks/hourly/python-management.yml
+
       rescue:
         - name: "Log hourly task failure"
           lineinfile:

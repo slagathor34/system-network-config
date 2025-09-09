@@ -1,0 +1,161 @@
+---
+# Python 3.12 System Management
+# Ensures Python 3.12 is the system default with development tools
+# Manages pip, venv, and essential Python packages
+
+- name: "Install Python 3.12 and development packages"
+  apt:
+    name:
+      - python3.12
+      - python3.12-dev
+      - python3.12-venv
+      - python3-pip
+      - python3-setuptools
+      - python3-wheel
+      - build-essential
+      - libffi-dev
+      - libssl-dev
+      - libbz2-dev
+      - libreadline-dev
+      - libsqlite3-dev
+      - libncursesw5-dev
+      - xz-utils
+      - tk-dev
+      - libxml2-dev
+      - libxmlsec1-dev
+      - liblzma-dev
+    state: present
+    update_cache: yes
+
+- name: "Ensure python3 symlink points to python3.12"
+  file:
+    src: /usr/bin/python3.12
+    dest: /usr/bin/python3
+    state: link
+    force: yes
+
+- name: "Configure python3 alternatives (backup method)"
+  alternatives:
+    name: python3
+    path: /usr/bin/python3.12
+    link: /usr/bin/python3
+    priority: 100
+  ignore_errors: yes
+
+- name: "Upgrade pip to latest version for Python 3.12"
+  pip:
+    name: pip
+    state: latest
+    executable: pip3
+  ignore_errors: yes
+
+- name: "Install essential Python packages via apt (respects externally-managed environment)"
+  apt:
+    name:
+      - python3-setuptools
+      - python3-wheel
+      - python3-venv
+      - python3-virtualenv
+      - python3-requests
+      - python3-urllib3
+      - python3-certifi
+      - python3-charset-normalizer
+      - python3-yaml
+      - python3-jinja2
+      - python3-markupsafe
+      - python3-pip-whl
+      - python3-full
+      - pipx
+    state: present
+    update_cache: yes
+  ignore_errors: yes
+
+- name: "Create Python cache directory with proper permissions"
+  file:
+    path: "/opt/storage/lab-fast/python-cache"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: "Configure pip cache to use fast storage"
+  blockinfile:
+    path: /etc/pip.conf
+    marker: "# {mark} ANSIBLE MANAGED PIP CONFIGURATION"
+    block: |
+      [global]
+      cache-dir = /opt/storage/lab-fast/python-cache
+      trusted-host = pypi.org
+                     pypi.python.org
+                     files.pythonhosted.org
+      timeout = 60
+      retries = 5
+      
+      [install]
+      upgrade-strategy = eager
+    create: yes
+
+- name: "Verify Python 3.12 is system default"
+  shell: python3 --version 2>&1
+  register: python_version_check
+  changed_when: false
+
+- name: "Verify pip functionality"
+  shell: pip3 --version 2>&1
+  register: pip_version_check
+  changed_when: false
+  failed_when: false
+
+- name: "Check Python module import capabilities"
+  shell: python3 -c "import sys, os, json, yaml, requests; print('Python modules OK')" 2>&1
+  register: python_modules_check
+  changed_when: false
+  failed_when: false
+
+- name: "Log Python 3.12 system status"
+  lineinfile:
+    path: /var/log/ansible-pull-network.log
+    line: "{{ ansible_date_time.iso8601 }} - Python System: {{ python_version_check.stdout | default('unknown') }}"
+    create: yes
+
+- name: "Log pip status"
+  lineinfile:
+    path: /var/log/ansible-pull-network.log
+    line: "{{ ansible_date_time.iso8601 }} - Pip Status: {{ pip_version_check.stdout | default('pip check failed') }}"
+    create: yes
+
+- name: "Log Python module availability"
+  lineinfile:
+    path: /var/log/ansible-pull-network.log
+    line: "{{ ansible_date_time.iso8601 }} - Python Modules: {{ 'Available' if 'Python modules OK' in python_modules_check.stdout else 'Import errors detected' }}"
+    create: yes
+
+- name: "Create Python virtual environment template"
+  file:
+    path: "/opt/storage/lab-fast/python-venvs"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: "Create system-wide Python profile configuration"
+  copy:
+    dest: /etc/profile.d/python312.sh
+    mode: '0644'
+    content: |
+      # Python 3.12 Environment Configuration
+      export PYTHON_VERSION="3.12"
+      export PYTHONDONTWRITEBYTECODE=1
+      export PYTHONUNBUFFERED=1
+      export PYTHONHASHSEED=random
+      export PIP_CACHE_DIR="/opt/storage/lab-fast/python-cache"
+      export VIRTUAL_ENV_DISABLE_PROMPT=0
+      
+      # Python path optimizations
+      if [ -d "/opt/storage/lab-fast/python-venvs" ]; then
+          export WORKON_HOME="/opt/storage/lab-fast/python-venvs"
+      fi
+      
+      # Alias for convenience
+      alias python='python3'
+      alias pip='pip3'
