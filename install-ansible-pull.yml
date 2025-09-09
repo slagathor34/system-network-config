@@ -183,6 +183,7 @@
           1. Pull latest configuration from GitHub every hour
           2. Apply network configuration if needed
           3. Validate the configuration
-          4. Automatically revert if failures persist > 60 minutes
+          4. Perform nightly maintenance (2 AM - 4 AM)
+          5. Automatically revert if failures persist > 60 minutes
           
           Logs are available at: /var/log/ansible-pull-network.log

@@ -1,0 +1,85 @@
+---
+# Network validation and configuration tasks
+# These tasks run hourly to ensure network configuration compliance
+
+- name: "Pre-validation - Check bond0 status"
+  command: cat /proc/net/bonding/bond0
+  register: bond_status_pre
+  ignore_errors: yes
+
+- name: "Pre-validation - Check VLAN interfaces"
+  command: ip link show {{ item }}
+  register: vlan_status_pre
+  ignore_errors: yes
+  loop:
+    - bond0.200
+    - bond0.500
+    - bond0.700
+
+- name: "Determine if configuration needs to be applied"
+  set_fact:
+    needs_config: >-
+      {{
+        bond_status_pre.failed or
+        'Mode: IEEE 802.3ad Dynamic link aggregation' not in (bond_status_pre.stdout | default('')) or
+        vlan_status_pre.results | selectattr('failed', 'equalto', true) | list | length > 0
+      }}
+
+- name: "Run main configuration playbook"
+  shell: ansible-playbook -i inventory.ini configure-802.1ad-bond.yml
+  register: config_result
+  when: needs_config | bool
+
+- name: "Log configuration application"
+  lineinfile:
+    path: "{{ validation_log }}"
+    line: "{{ ansible_date_time.iso8601 }} - Configuration {{ 'applied' if needs_config else 'verified (no changes needed)' }}"
+  when: needs_config is defined
+
+- name: "Post-validation - Run validation playbook"
+  shell: ansible-playbook -i inventory.ini validate-bond-config.yml
+  register: validation_result
+  failed_when: validation_result.rc != 0
+
+- name: "Check validation results"
+  fail:
+    msg: "Network validation failed after configuration attempt"
+  when: validation_failed is defined and validation_failed | bool
+
+- name: "Monitor for persistent failures and trigger revert if needed"
+  block:
+    - name: "Read recent log entries"
+      shell: "tail -n 100 {{ validation_log }} | grep -c 'VALIDATION FAILED' || echo 0"
+      register: recent_failures
+
+    - name: "Check time since first recent failure"
+      shell: |
+        first_failure=$(tail -n 100 {{ validation_log }} | grep 'VALIDATION FAILED' | head -1 | cut -d' ' -f1)
+        if [ -n "$first_failure" ]; then
+          current_time=$(date -u +%Y-%m-%dT%H:%M:%S)
+          time_diff=$(( $(date -d "$current_time" +%s) - $(date -d "$first_failure" +%s) ))
+          echo $(( time_diff / 60 ))
+        else
+          echo 0
+        fi
+      register: minutes_since_first_failure
+      when: recent_failures.stdout | int > 3
+
+    - name: "Trigger automatic revert if failures persist"
+      block:
+        - name: "Find latest backup directory"
+          shell: "ls -1t {{ config_backup_dir }}/ | head -1"
+          register: latest_backup
+          
+        - name: "Execute rollback script"
+          shell: "{{ config_backup_dir }}/{{ latest_backup.stdout }}/rollback.sh restore"
+          register: rollback_result
+
+        - name: "Log automatic revert"
+          lineinfile:
+            path: "{{ validation_log }}"
+            line: "{{ ansible_date_time.iso8601 }} - AUTOMATIC REVERT EXECUTED - Reason: Persistent failures for {{ minutes_since_first_failure.stdout }} minutes"
+
+      when: 
+        - recent_failures.stdout | int > 3
+        - minutes_since_first_failure.stdout | int > revert_threshold_minutes

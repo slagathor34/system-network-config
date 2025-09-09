@@ -1,0 +1,82 @@
+---
+# Docker configuration and management tasks
+# These tasks run hourly to ensure Docker is properly configured
+
+- name: "Install Docker prerequisites"
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    state: present
+
+- name: "Add Docker GPG key"
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    keyring: /usr/share/keyrings/docker-archive-keyring.gpg
+    state: present
+
+- name: "Add Docker repository"
+  apt_repository:
+    repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu noble stable"
+    state: present
+    filename: docker
+
+- name: "Ensure Docker is installed (apt version)"
+  apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+    update_cache: yes
+  ignore_errors: yes
+
+- name: "Create Docker data directory on fast storage"
+  file:
+    path: "/opt/storage/lab-fast/containers/docker"
+    state: directory
+    owner: root
+    group: docker
+    mode: '0775'
+    recurse: yes
+
+- name: "Create Docker configuration directory"
+  file:
+    path: "/etc/docker"
+    state: directory
+    mode: '0755'
+
+- name: "Configure Docker daemon to use fast storage"
+  copy:
+    content: |
+      {
+          "data-root": "/opt/storage/lab-fast/containers/docker",
+          "log-level": "info"
+      }
+    dest: "/etc/docker/daemon.json"
+    owner: root
+    group: root
+    mode: '0644'
+  register: docker_config_changed
+
+- name: "Restart Docker if configuration changed"
+  systemd:
+    name: docker
+    state: restarted
+    enabled: yes
+  when: docker_config_changed is changed
+
+- name: "Verify Docker is using correct data directory"
+  shell: docker info | grep "Docker Root Dir" | grep "/opt/storage/lab-fast/containers/docker"
+  register: docker_verification
+  ignore_errors: yes
+
+- name: "Log Docker configuration status"
+  lineinfile:
+    path: "{{ validation_log }}"
+    line: "{{ ansible_date_time.iso8601 }} - Docker configuration {{ 'verified' if docker_verification.rc == 0 else 'failed' }}"

@@ -1,0 +1,227 @@
+---
+# Playbook to set up weekly system updates with systemd timer
+- name: "Setup Weekly System Updates with Systemd Timer"
+  hosts: localhost
+  become: yes
+  vars:
+    repo_url: "https://github.com/slagathor34/system-network-config.git"
+    ansible_pull_user: "root"
+    work_dir: "/opt/ansible-pull-network"
+
+  tasks:
+    - name: "Create systemd service for weekly updates"
+      copy:
+        content: |
+          [Unit]
+          Description=Weekly System Updates and Reboot
+          After=network-online.target
+          Wants=network-online.target
+          
+          [Service]
+          Type=oneshot
+          User={{ ansible_pull_user }}
+          WorkingDirectory={{ work_dir }}
+          ExecStart=/usr/bin/ansible-pull \
+            --url {{ repo_url }} \
+            --directory {{ work_dir }}/repo \
+            --inventory inventory.ini \
+            --checkout main \
+            --clean \
+            --purge \
+            --extra-vars "is_weekly_run=true execution_type=weekly" \
+            ansible-pull-main.yml
+          StandardOutput=journal
+          StandardError=journal
+          
+          # Set timeout for long-running updates
+          TimeoutStartSec=3600
+          
+          # Don't restart on failure for weekly updates
+          Restart=no
+          
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/ansible-pull-weekly.service
+        mode: '0644'
+
+    - name: "Create systemd timer for weekly execution (Sunday midnight)"
+      copy:
+        content: |
+          [Unit]
+          Description=Weekly System Updates and Reboot (Sunday Midnight)
+          Requires=ansible-pull-weekly.service
+          
+          [Timer]
+          OnCalendar=Sun *-*-* 00:00:00
+          RandomizedDelaySec=600
+          Persistent=true
+          WakeSystem=true
+          
+          [Install]
+          WantedBy=timers.target
+        dest: /etc/systemd/system/ansible-pull-weekly.timer
+        mode: '0644'
+
+    - name: "Create logrotate configuration for weekly update logs"
+      copy:
+        content: |
+          /var/log/weekly-update-*.log {
+            monthly
+            rotate 12
+            compress
+            delaycompress
+            missingok
+            notifempty
+            create 0644 root root
+          }
+        dest: /etc/logrotate.d/ansible-pull-weekly
+        mode: '0644'
+
+    - name: "Update management script to include weekly operations"
+      copy:
+        content: |
+          #!/bin/bash
+          # Ansible-Pull Network Management Script (Enhanced with Weekly Updates)
+          
+          TIMER_NAME="ansible-pull-network.timer"
+          SERVICE_NAME="ansible-pull-network.service"
+          WEEKLY_TIMER_NAME="ansible-pull-weekly.timer"
+          WEEKLY_SERVICE_NAME="ansible-pull-weekly.service"
+          LOG_FILE="/var/log/ansible-pull-network.log"
+          
+          case "$1" in
+            status)
+              echo "=== Hourly Timer Status ==="
+              systemctl status $TIMER_NAME --no-pager -l
+              echo ""
+              echo "=== Weekly Timer Status ==="
+              systemctl status $WEEKLY_TIMER_NAME --no-pager -l
+              echo ""
+              echo "=== Service Status ==="  
+              systemctl status $SERVICE_NAME --no-pager -l
+              echo ""
+              echo "=== Recent Log Entries ==="
+              tail -20 $LOG_FILE 2>/dev/null || echo "No log file found"
+              echo ""
+              echo "=== Next Scheduled Runs ==="
+              systemctl list-timers | grep -E "(ansible-pull|weekly)"
+              ;;
+            
+            run-now)
+              echo "Running ansible-pull immediately..."
+              systemctl start $SERVICE_NAME
+              echo "Check logs with: journalctl -u $SERVICE_NAME -f"
+              ;;
+            
+            run-weekly)
+              echo "Running weekly update immediately..."
+              echo "WARNING: This will update all packages and reboot the system!"
+              read -p "Are you sure? (yes/no): " confirm
+              if [ "$confirm" = "yes" ]; then
+                systemctl start $WEEKLY_SERVICE_NAME
+                echo "Check logs with: journalctl -u $WEEKLY_SERVICE_NAME -f"
+              else
+                echo "Weekly update cancelled"
+              fi
+              ;;
+            
+            logs)
+              echo "=== Ansible-Pull Logs ==="
+              tail -50 $LOG_FILE 2>/dev/null || echo "No log file found"
+              echo ""
+              echo "=== Weekly Update Logs ==="
+              ls -1t /var/log/weekly-update-*.log 2>/dev/null | head -3 | while read log; do
+                echo "--- $(basename $log) ---"
+                tail -20 "$log"
+                echo ""
+              done
+              echo "=== Systemd Journal ==="
+              journalctl -u $SERVICE_NAME --no-pager -n 20
+              ;;
+            
+            disable)
+              echo "Disabling ansible-pull timers..."
+              systemctl disable --now $TIMER_NAME $WEEKLY_TIMER_NAME
+              echo "All ansible-pull timers disabled"
+              ;;
+            
+            enable)
+              echo "Enabling ansible-pull timers..."
+              systemctl enable --now $TIMER_NAME $WEEKLY_TIMER_NAME
+              echo "All ansible-pull timers enabled"
+              ;;
+            
+            disable-weekly)
+              echo "Disabling weekly update timer only..."
+              systemctl disable --now $WEEKLY_TIMER_NAME
+              echo "Weekly updates disabled (hourly still active)"
+              ;;
+            
+            enable-weekly)
+              echo "Enabling weekly update timer..."
+              systemctl enable --now $WEEKLY_TIMER_NAME
+              echo "Weekly updates enabled"
+              ;;
+            
+            next-weekly)
+              echo "=== Next Weekly Update ==="
+              systemctl list-timers $WEEKLY_TIMER_NAME
+              echo ""
+              echo "=== Weekly Update History ==="
+              journalctl -u $WEEKLY_SERVICE_NAME --no-pager -n 10 --since "1 month ago" | grep -E "(Started|Finished|Failed)" || echo "No recent weekly updates found"
+              ;;
+            
+            *)
+              echo "Usage: $0 {status|run-now|run-weekly|logs|disable|enable|disable-weekly|enable-weekly|next-weekly}"
+              echo ""
+              echo "Commands:"
+              echo "  status         - Show timer/service status and recent logs"
+              echo "  run-now        - Execute ansible-pull immediately"
+              echo "  run-weekly     - Execute weekly update immediately (with confirmation)"
+              echo "  logs           - Show detailed logs (hourly and weekly)"
+              echo "  disable        - Disable all automation (hourly and weekly)"
+              echo "  enable         - Enable all automation (hourly and weekly)"
+              echo "  disable-weekly - Disable only weekly updates"
+              echo "  enable-weekly  - Enable only weekly updates"
+              echo "  next-weekly    - Show next scheduled weekly update"
+              exit 1
+              ;;
+          esac
+        dest: /usr/local/bin/manage-ansible-pull
+        mode: '0755'
+
+    - name: "Reload systemd daemon"
+      systemd:
+        daemon_reload: yes
+
+    - name: "Enable weekly update timer"
+      systemd:
+        name: ansible-pull-weekly.timer
+        enabled: yes
+        state: started
+
+    - name: "Display weekly setup completion"
+      debug:
+        msg: |
+          Weekly system update setup completed!
+          
+          Schedule: Every Sunday at midnight (00:00)
+          
+          Management commands:
+          - sudo /usr/local/bin/manage-ansible-pull status
+          - sudo /usr/local/bin/manage-ansible-pull run-weekly
+          - sudo /usr/local/bin/manage-ansible-pull next-weekly
+          - sudo /usr/local/bin/manage-ansible-pull disable-weekly
+          - sudo /usr/local/bin/manage-ansible-pull enable-weekly
+          
+          The system will now automatically:
+          1. Update all packages every Sunday at midnight
+          2. Update NVIDIA drivers, Docker, and Ollama
+          3. Create system backups before updates
+          4. Reboot automatically after updates
+          5. Resume normal operation with ansible-pull after reboot
+          
+          Logs will be available at: /var/log/weekly-update-*.log
+          
+          Next scheduled update: 
+          {{ ansible_date_time.weekday_name }} {{ ansible_date_time.date }} - Next Sunday 00:00 UTC

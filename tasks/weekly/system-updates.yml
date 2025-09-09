@@ -1,0 +1,170 @@
+---
+# Weekly system update and reboot tasks
+# These tasks run weekly on Sunday nights at midnight to update all packages and reboot
+
+- name: "Pre-update system health check"
+  shell: |
+    echo "=== Pre-Update System Status ==="
+    echo "Uptime: $(cat /proc/uptime | awk '{print int($1/86400) " days, " int(($1%86400)/3600) " hours, " int(($1%3600)/60) " minutes"}')"
+    echo "Load: $(uptime | cut -d',' -f3-)"
+    echo "Memory: $(free -h | grep Mem)"
+    echo "Disk Usage: $(df -h | grep -E '(lab-fast|lab-bulk|Lab)')"
+    echo "Active Docker Containers: $(docker ps --format 'table {{ "{{" }}.Names{{ "}}" }}\t{{ "{{" }}.Status{{ "}}" }}' 2>/dev/null || echo 'Docker not running')"
+    echo "Network Bond Status: $(cat /proc/net/bonding/bond0 | grep -A 2 'Bonding Mode' || echo 'Bond not configured')"
+    echo "GPU Status: $(nvidia-smi --query-gpu=name,temperature.gpu,utilization.gpu --format=csv,noheader 2>/dev/null || echo 'GPU not available')"
+  register: pre_update_status
+  changed_when: false
+
+- name: "Archive pre-update system status"
+  copy:
+    content: "{{ pre_update_status.stdout }}"
+    dest: "/var/log/weekly-update-pre-{{ ansible_date_time.date }}.log"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: "Stop critical services gracefully before updates"
+  systemd:
+    name: "{{ item }}"
+    state: stopped
+  loop:
+    - ollama
+    - nvidia-performance
+  ignore_errors: yes
+  register: services_stopped
+
+- name: "Create backup of current network configuration"
+  shell: |
+    backup_dir="/etc/netplan/weekly-backup-{{ ansible_date_time.epoch }}"
+    mkdir -p "$backup_dir"
+    cp -r /etc/netplan/*.yaml "$backup_dir/" 2>/dev/null || true
+    cp -r /etc/NetworkManager/system-connections/ "$backup_dir/nm-connections/" 2>/dev/null || true
+    echo "$backup_dir"
+  register: weekly_backup_dir
+
+- name: "Update package lists and cache"
+  apt:
+    update_cache: yes
+    cache_valid_time: 0
+  register: package_update_result
+
+- name: "Check for upgradable packages before update"
+  shell: apt list --upgradable 2>/dev/null | grep -v "WARNING" | wc -l
+  register: packages_before_update
+  changed_when: false
+
+- name: "Perform full system upgrade"
+  apt:
+    upgrade: full
+    autoremove: yes
+    autoclean: yes
+    force_apt_get: yes
+  register: upgrade_result
+
+- name: "Update snap packages"
+  shell: snap refresh
+  register: snap_update_result
+  ignore_errors: yes
+
+- name: "Check for packages that require reboot"
+  stat:
+    path: /var/run/reboot-required
+  register: reboot_required_file
+
+- name: "Get list of packages requiring reboot"
+  shell: cat /var/run/reboot-required.pkgs 2>/dev/null || echo "No packages listed"
+  register: reboot_required_packages
+  when: reboot_required_file.stat.exists
+
+- name: "Update NVIDIA drivers and CUDA if available"
+  apt:
+    name:
+      - nvidia-driver-575-open
+      - nvidia-cuda-toolkit
+      - nvidia-utils-575
+    state: latest
+  register: nvidia_update_result
+  ignore_errors: yes
+
+- name: "Update Docker and container components"
+  apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: latest
+  register: docker_update_result
+  ignore_errors: yes
+
+- name: "Update Ollama to latest version"
+  shell: |
+    current_version=$(ollama --version 2>/dev/null | head -1 || echo "not installed")
+    curl -fsSL https://ollama.com/install.sh | bash
+    new_version=$(ollama --version 2>/dev/null | head -1 || echo "failed")
+    echo "Updated from: $current_version to: $new_version"
+  register: ollama_update_result
+  ignore_errors: yes
+
+- name: "Check for upgradable packages after update"
+  shell: apt list --upgradable 2>/dev/null | grep -v "WARNING" | wc -l
+  register: packages_after_update
+  changed_when: false
+
+- name: "Generate update summary report"
+  set_fact:
+    update_summary: |
+      === Weekly System Update Summary - {{ ansible_date_time.iso8601 }} ===
+      
+      Pre-Update Status:
+      - Packages available for upgrade: {{ packages_before_update.stdout }}
+      - System uptime before update: {{ pre_update_status.stdout_lines[1] | default('Unknown') }}
+      
+      Update Results:
+      - APT upgrade result: {{ 'success' if upgrade_result is succeeded else 'failed' }}
+      - Snap update result: {{ 'success' if snap_update_result is succeeded else 'failed' }}
+      - NVIDIA update result: {{ 'success' if nvidia_update_result is succeeded else 'failed' }}
+      - Docker update result: {{ 'success' if docker_update_result is succeeded else 'failed' }}
+      - Ollama update result: {{ 'success' if ollama_update_result is succeeded else 'failed' }}
+      
+      Post-Update Status:
+      - Packages still available for upgrade: {{ packages_after_update.stdout }}
+      - Reboot required: {{ 'Yes' if reboot_required_file.stat.exists else 'No' }}
+      {% if reboot_required_file.stat.exists %}
+      - Packages requiring reboot: {{ reboot_required_packages.stdout | default('Unknown') }}
+      {% endif %}
+      
+      Network Configuration Backup: {{ weekly_backup_dir.stdout }}
+
+- name: "Archive weekly update summary"
+  copy:
+    content: "{{ update_summary }}"
+    dest: "/var/log/weekly-update-summary-{{ ansible_date_time.date }}.log"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: "Log update completion to main log"
+  lineinfile:
+    path: "{{ validation_log }}"
+    line: "{{ ansible_date_time.iso8601 }} - Weekly update completed - Before: {{ packages_before_update.stdout }} packages, After: {{ packages_after_update.stdout }} packages, Reboot: {{ 'required' if reboot_required_file.stat.exists else 'not required' }}"
+
+- name: "Schedule immediate reboot"
+  shell: |
+    echo "{{ ansible_date_time.iso8601 }} - Weekly reboot initiated after system updates" >> {{ validation_log }}
+    shutdown -r +1 "Weekly system update reboot in 1 minute"
+  when: true  # Always reboot on Sunday nights after updates
+
+- name: "Final status notification"
+  debug:
+    msg: |
+      Weekly system update completed at {{ ansible_date_time.iso8601 }}
+      
+      Summary:
+      - Updated {{ (packages_before_update.stdout | int) - (packages_after_update.stdout | int) }} packages
+      - System will reboot in 1 minute for weekly maintenance
+      - Update logs: /var/log/weekly-update-summary-{{ ansible_date_time.date }}.log
+      - Network backup: {{ weekly_backup_dir.stdout }}
+      
+      Services will be automatically restored after reboot by ansible-pull.

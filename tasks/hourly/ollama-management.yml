@@ -1,0 +1,108 @@
+---
+# Ollama AI model service configuration and management tasks
+# These tasks run hourly to ensure Ollama is properly configured with GPU optimization
+
+- name: "Create Ollama directory structure on fast storage"
+  file:
+    path: "/opt/storage/lab-fast/projects/hosted-services/ollama"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: "Download Ollama installation script"
+  get_url:
+    url: "https://ollama.com/install.sh"
+    dest: "/tmp/ollama-install.sh"
+    mode: '0755'
+    force: yes
+  register: ollama_script_download
+
+- name: "Check if Ollama is already installed"
+  stat:
+    path: "/usr/local/bin/ollama"
+  register: ollama_binary_check
+
+- name: "Install Ollama using official script"
+  shell: "bash /tmp/ollama-install.sh"
+  when: not ollama_binary_check.stat.exists or ollama_script_download.changed
+  register: ollama_install_result
+  ignore_errors: yes
+
+- name: "Create ollama user with custom home directory"
+  user:
+    name: ollama
+    system: yes
+    shell: /bin/false
+    home: /opt/storage/lab-fast/projects/hosted-services/ollama
+    create_home: yes
+    groups: 
+      - render
+      - video
+    append: yes
+  ignore_errors: yes
+
+- name: "Set ownership for Ollama directory"
+  file:
+    path: "/opt/storage/lab-fast/projects/hosted-services/ollama"
+    owner: ollama
+    group: ollama
+    recurse: yes
+    state: directory
+
+- name: "Update Ollama systemd service with GPU optimization"
+  copy:
+    content: |
+      [Unit]
+      Description=Ollama Service
+      After=network-online.target
+
+      [Service]
+      ExecStart=/usr/local/bin/ollama serve
+      User=ollama
+      Group=ollama
+      Restart=always
+      RestartSec=3
+      Environment="PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/cuda/bin"
+      Environment="LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
+      Environment="OLLAMA_HOME=/opt/storage/lab-fast/projects/hosted-services/ollama"
+      Environment="CUDA_VISIBLE_DEVICES=0"
+      Environment="OLLAMA_GPU_LAYERS=-1"
+      Environment="OLLAMA_NUM_GPU=1"
+      Environment="OLLAMA_GPU_OVERHEAD=0"
+      Environment="OLLAMA_NUM_THREAD=16"
+      Environment="OLLAMA_MAX_LOADED_MODELS=4"
+      Environment="OLLAMA_FLASH_ATTENTION=1"
+      Environment="OLLAMA_KEEP_ALIVE=24h"
+      Environment="OLLAMA_PARALLEL_REQUESTS=4"
+      Environment="OLLAMA_SCHED_SPREAD=false"
+      Environment="OLLAMA_NEW_ENGINE=true"
+
+      [Install]
+      WantedBy=default.target
+    dest: "/etc/systemd/system/ollama.service"
+    owner: root
+    group: root
+    mode: '0644'
+  register: ollama_service_changed
+
+- name: "Reload systemd and enable Ollama service"
+  systemd:
+    name: ollama
+    daemon_reload: yes
+    enabled: yes
+    state: started
+  when: ollama_binary_check.stat.exists or ollama_install_result is succeeded
+
+- name: "Verify Ollama service is running"
+  wait_for:
+    port: 11434
+    host: localhost
+    timeout: 30
+  register: ollama_accessibility
+  ignore_errors: yes
+
+- name: "Log Ollama configuration status"
+  lineinfile:
+    path: "{{ validation_log }}"
+    line: "{{ ansible_date_time.iso8601 }} - Ollama configuration {{ 'verified' if ollama_accessibility is succeeded else 'failed' }}"

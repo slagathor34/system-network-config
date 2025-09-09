@@ -1,0 +1,47 @@
+---
+# NFS4 mount configuration and management tasks
+# These tasks run hourly to ensure NFS mounts are properly configured
+
+- name: "Ensure NFS client packages are installed"
+  apt:
+    name:
+      - nfs-common
+      - nfs4-acl-tools
+    state: present
+
+- name: "Configure hosts entry for storage.brainstormes.org to use 10Gb trunk"
+  lineinfile:
+    path: "/etc/hosts"
+    line: "192.168.6.200 storage.brainstormes.org"
+    regexp: "^.*storage\\.brainstormes\\.org.*$"
+    backup: yes
+
+- name: "Create NFS mount point directory"
+  file:
+    path: "/opt/storage/lab-shared/Lab"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: "Configure NFS4 mount in fstab with optimal options"
+  mount:
+    path: "/opt/storage/lab-shared/Lab"
+    src: "storage.brainstormes.org:/Lab"
+    fstype: "nfs4"
+    opts: "rw,hard,intr,rsize=1048576,wsize=1048576,timeo=14,retrans=2,proto=tcp,vers=4.2,fsc"
+    state: mounted
+    backup: yes
+  register: nfs_mount_result
+  ignore_errors: yes
+
+- name: "Verify NFS mount accessibility"
+  stat:
+    path: "/opt/storage/lab-shared/Lab"
+  register: nfs_mount_check
+  ignore_errors: yes
+
+- name: "Log NFS mount configuration status"
+  lineinfile:
+    path: "{{ validation_log }}"
+    line: "{{ ansible_date_time.iso8601 }} - NFS mount configuration {{ 'verified' if nfs_mount_result is succeeded and nfs_mount_check.stat.exists else 'failed' }}"

@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Overview
 
-This is a system administration repository containing Ansible playbooks for configuring and managing 802.1ad bonding on 10Gb network interfaces. The repository focuses on network infrastructure automation with comprehensive backup and rollback capabilities.
+This is a system administration repository containing Ansible playbooks for configuring and managing 802.1ad bonding on 10Gb network interfaces, Docker container infrastructure, NFS4 storage mounts, and Cockpit web management interface. The repository focuses on network, container, storage, and system monitoring automation with comprehensive backup and rollback capabilities.
 
 ## Core Components
 
 ### Main Playbooks
 - `configure-802.1ad-bond.yml` - Primary configuration playbook that sets up 802.3ad LACP bonding on Intel 10Gb NICs (enp9s0f0, enp9s0f1) with VLAN configuration
 - `validate-bond-config.yml` - Validation playbook that verifies bond configuration, LACP status, and VLAN interfaces
-- `ansible-pull-main.yml` - Main playbook for ansible-pull execution with automatic validation and revert capabilities
+- `ansible-pull-main.yml` - Main playbook for ansible-pull execution with automatic validation, revert capabilities, Docker configuration management, NFS4 mount management, and Cockpit web console setup
 - `install-ansible-pull.yml` - Setup playbook that configures systemd timer for hourly ansible-pull execution
 - `rollback_script.j2` - Jinja2 template for generating rollback scripts with backup restoration capabilities
 
@@ -101,12 +101,15 @@ watch -n 1 'cat /proc/net/bonding/bond0'
 - **Automated Management**: Hourly ansible-pull execution with automatic revert on persistent failures
 - **Failure Detection**: Monitors validation failures and triggers automatic rollback after 60 minutes of persistent issues
 - **Logging**: Comprehensive logging to `/var/log/ansible-pull-network.log` with logrotate configuration
+- **Docker Management**: Automatic Docker installation, configuration, and data directory management on high-speed storage
+- **Cockpit Management**: Automated web management interface setup with container and system monitoring modules
+- **NFS4 Storage Management**: Automated NFS4 mount configuration with optimal performance settings and 10Gb trunk utilization
 
 ## Architecture Overview
 
-The system uses a layered approach for network configuration management:
+The system uses a layered approach for network and container infrastructure management:
 
-1. **Configuration Layer**: Ansible playbooks define desired network state
+1. **Configuration Layer**: Ansible playbooks define desired network, Docker, NFS4 storage, and Cockpit infrastructure state
 2. **Automation Layer**: ansible-pull provides continuous configuration management
 3. **Validation Layer**: Comprehensive validation ensures configuration correctness
 4. **Safety Layer**: Backup and rollback mechanisms provide fail-safe operations

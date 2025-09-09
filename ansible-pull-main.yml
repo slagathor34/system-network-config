@@ -1,8 +1,9 @@
 ---
-# Main ansible-pull playbook that validates and maintains network configuration
-# This playbook runs hourly via ansible-pull to ensure network configuration compliance
+# Main ansible-pull orchestration playbook
+# This playbook runs hourly via ansible-pull to ensure system configuration compliance
+# and nightly for maintenance tasks
 
-- name: "Network Configuration Management with Auto-Revert"
+- name: "System Configuration Management and Maintenance"
   hosts: localhost
   become: yes
   gather_facts: yes
@@ -11,7 +12,7 @@
     config_backup_dir: "/etc/netplan/ansible-backup"
     validation_log: "/var/log/ansible-pull-network.log"
     revert_threshold_minutes: 60  # Revert if issues persist for more than 60 minutes
-
+    
   tasks:
     - name: "Create log directory"
       file:
@@ -19,102 +20,82 @@
         state: directory
         mode: '0755'
 
-    - name: "Log pull execution start"
+    - name: "Determine execution schedule based on time and variables"
+      set_fact:
+        is_nightly_run: "{{ ansible_date_time.hour | int >= 2 and ansible_date_time.hour | int <= 4 }}"
+        is_weekly_run: "{{ is_weekly_run | default(false) | bool }}"
+        execution_type: "{{ 'weekly' if (is_weekly_run | default(false) | bool) else ('nightly' if (ansible_date_time.hour | int >= 2 and ansible_date_time.hour | int <= 4) else 'hourly') }}"
+
+    - name: "Log execution start"
       lineinfile:
         path: "{{ validation_log }}"
-        line: "{{ ansible_date_time.iso8601 }} - Ansible-pull execution started"
+        line: "{{ ansible_date_time.iso8601 }} - Ansible-pull {{ execution_type }} execution started"
         create: yes
 
-    # Pre-validation: Check current network state
-    - name: "Pre-validation - Check bond0 status"
-      command: cat /proc/net/bonding/bond0
-      register: bond_status_pre
-      ignore_errors: yes
-
-    - name: "Pre-validation - Check VLAN interfaces"
-      command: ip link show {{ item }}
-      register: vlan_status_pre
-      ignore_errors: yes
-      loop:
-        - bond0.200
-        - bond0.500
-        - bond0.700
-
-    - name: "Determine if configuration needs to be applied"
-      set_fact:
-        needs_config: >-
-          {{
-            bond_status_pre.failed or
-            'Mode: IEEE 802.3ad Dynamic link aggregation' not in (bond_status_pre.stdout | default('')) or
-            vlan_status_pre.results | selectattr('failed', 'equalto', true) | list | length > 0
-          }}
-
-    # Run main configuration only if needed
-    - name: "Run main configuration playbook"
-      shell: ansible-playbook -i inventory.ini configure-802.1ad-bond.yml
-      register: config_result
-      when: needs_config | bool
-
-    - name: "Log configuration application"
-      lineinfile:
-        path: "{{ validation_log }}"
-        line: "{{ ansible_date_time.iso8601 }} - Configuration {{ 'applied' if needs_config else 'verified (no changes needed)' }}"
-      when: needs_config is defined
-
-    # Post-validation: Verify network state after changes
-    - name: "Post-validation - Run validation playbook"
-      shell: ansible-playbook -i inventory.ini validate-bond-config.yml
-      register: validation_result
-      failed_when: validation_result.rc != 0
-
-    - name: "Check validation results"
-      fail:
-        msg: "Network validation failed after configuration attempt"
-      when: validation_failed is defined and validation_failed | bool
-
-    # Monitor for persistent failures and trigger revert if needed
-    - name: "Check for persistent failures"
+    # Hourly Tasks - Core System Configuration Management
+    - name: "Execute hourly configuration tasks"
       block:
-        - name: "Read recent log entries"
-          shell: "tail -n 100 {{ validation_log }} | grep -c 'VALIDATION FAILED' || echo 0"
-          register: recent_failures
+        - name: "Network validation and configuration"
+          include_tasks: tasks/hourly/network-validation.yml
 
-        - name: "Check time since first recent failure"
-          shell: |
-            first_failure=$(tail -n 100 {{ validation_log }} | grep 'VALIDATION FAILED' | head -1 | cut -d' ' -f1)
-            if [ -n "$first_failure" ]; then
-              current_time=$(date -u +%Y-%m-%dT%H:%M:%S)
-              time_diff=$(( $(date -d "$current_time" +%s) - $(date -d "$first_failure" +%s) ))
-              echo $(( time_diff / 60 ))
-            else
-              echo 0
-            fi
-          register: minutes_since_first_failure
-          when: recent_failures.stdout | int > 3
+        - name: "Docker configuration management"
+          include_tasks: tasks/hourly/docker-management.yml
 
-        - name: "Trigger automatic revert if failures persist"
-          block:
-            - name: "Find latest backup directory"
-              shell: "ls -1t {{ config_backup_dir }}/ | head -1"
-              register: latest_backup
-              
-            - name: "Execute rollback script"
-              shell: "{{ config_backup_dir }}/{{ latest_backup.stdout }}/rollback.sh restore"
-              register: rollback_result
+        - name: "Cockpit web console management"
+          include_tasks: tasks/hourly/cockpit-management.yml
 
-            - name: "Log automatic revert"
-              lineinfile:
-                path: "{{ validation_log }}"
-                line: "{{ ansible_date_time.iso8601 }} - AUTOMATIC REVERT EXECUTED - Reason: Persistent failures for {{ minutes_since_first_failure.stdout }} minutes"
+        - name: "NFS mount management"
+          include_tasks: tasks/hourly/nfs-management.yml
 
-          when: 
-            - recent_failures.stdout | int > 3
-            - minutes_since_first_failure.stdout | int > revert_threshold_minutes
+        - name: "Ollama AI service management"
+          include_tasks: tasks/hourly/ollama-management.yml
+
+        - name: "GPU optimization management"
+          include_tasks: tasks/hourly/gpu-optimization.yml
+
+      rescue:
+        - name: "Log hourly task failure"
+          lineinfile:
+            path: "{{ validation_log }}"
+            line: "{{ ansible_date_time.iso8601 }} - HOURLY TASK FAILURE - {{ ansible_failed_task.name | default('Unknown task') }}"
+
+        - name: "Notify validation failure handler"
+          set_fact:
+            validation_failed: true
+
+    # Nightly Tasks - System Maintenance and Cleanup
+    - name: "Execute nightly maintenance tasks"
+      block:
+        - name: "Cache cleanup and resource management"
+          include_tasks: tasks/nightly/cache-cleanup.yml
+
+        - name: "System optimization and maintenance"
+          include_tasks: tasks/nightly/system-maintenance.yml
+
+      when: is_nightly_run | bool
+      rescue:
+        - name: "Log nightly task failure"
+          lineinfile:
+            path: "{{ validation_log }}"
+            line: "{{ ansible_date_time.iso8601 }} - NIGHTLY TASK FAILURE - {{ ansible_failed_task.name | default('Unknown task') }}"
+
+    # Weekly Tasks - System Updates and Maintenance
+    - name: "Execute weekly update tasks"
+      block:
+        - name: "System package updates and reboot"
+          include_tasks: tasks/weekly/system-updates.yml
+
+      when: is_weekly_run | bool
+      rescue:
+        - name: "Log weekly task failure"
+          lineinfile:
+            path: "{{ validation_log }}"
+            line: "{{ ansible_date_time.iso8601 }} - WEEKLY TASK FAILURE - {{ ansible_failed_task.name | default('Unknown task') }}"
 
     - name: "Log successful completion"
       lineinfile:
         path: "{{ validation_log }}"
-        line: "{{ ansible_date_time.iso8601 }} - Ansible-pull execution completed successfully"
+        line: "{{ ansible_date_time.iso8601 }} - Ansible-pull {{ execution_type }} execution completed successfully"
 
   handlers:
     - name: "Log validation failure"

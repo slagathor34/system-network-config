@@ -1,0 +1,100 @@
+---
+# Nightly system maintenance tasks
+# These tasks run nightly to perform system optimization and maintenance
+
+- name: "Update package lists"
+  apt:
+    update_cache: yes
+  register: package_update_result
+
+- name: "Check for available package upgrades"
+  shell: apt list --upgradable 2>/dev/null | grep -v "WARNING" | wc -l
+  register: upgradable_packages
+  changed_when: false
+
+- name: "Defragment and optimize btrfs filesystems"
+  shell: |
+    btrfs filesystem defragment -r /opt/storage/lab-fast
+    btrfs filesystem defragment -r /opt/storage/lab-bulk
+    btrfs balance start -dusage=75 /opt/storage/lab-fast
+    btrfs balance start -dusage=75 /opt/storage/lab-bulk
+  register: btrfs_optimization_result
+  ignore_errors: yes
+
+- name: "Check filesystem health and usage"
+  shell: |
+    echo "=== Filesystem Usage ==="
+    df -h | grep -E "(lab-fast|lab-bulk|Lab)"
+    echo "=== Btrfs Statistics ==="
+    btrfs filesystem show
+    btrfs filesystem usage /opt/storage/lab-fast
+    btrfs filesystem usage /opt/storage/lab-bulk
+  register: filesystem_health_check
+  changed_when: false
+
+- name: "Optimize system swappiness for AI workloads"
+  sysctl:
+    name: vm.swappiness
+    value: "10"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-ai-optimization.conf
+
+- name: "Optimize dirty page writeback for fast storage"
+  sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-ai-optimization.conf
+  loop:
+    - { key: "vm.dirty_background_ratio", value: "5" }
+    - { key: "vm.dirty_ratio", value: "15" }
+    - { key: "vm.dirty_writeback_centisecs", value: "300" }
+    - { key: "vm.dirty_expire_centisecs", value: "1500" }
+
+- name: "Update system file limits for AI workloads"
+  pam_limits:
+    domain: "*"
+    limit_type: "{{ item.type }}"
+    limit_item: "{{ item.item }}"
+    value: "{{ item.value }}"
+  loop:
+    - { type: "soft", item: "nofile", value: "65536" }
+    - { type: "hard", item: "nofile", value: "65536" }
+    - { type: "soft", item: "memlock", value: "unlimited" }
+    - { type: "hard", item: "memlock", value: "unlimited" }
+
+- name: "Check and repair any filesystem errors"
+  shell: |
+    btrfs scrub start /opt/storage/lab-fast
+    btrfs scrub start /opt/storage/lab-bulk
+  register: filesystem_scrub_result
+  ignore_errors: yes
+
+- name: "Generate system health report"
+  shell: |
+    echo "=== System Load and Memory ==="
+    uptime
+    free -h
+    echo "=== GPU Status ==="
+    nvidia-smi --query-gpu=timestamp,name,temperature.gpu,utilization.gpu,memory.used,memory.total --format=csv
+    echo "=== Network Bond Status ==="
+    cat /proc/net/bonding/bond0 | grep -A 5 "Bonding Mode"
+    echo "=== Service Status ==="
+    systemctl is-active docker ollama cockpit.socket nvidia-performance
+  register: system_health_report
+  changed_when: false
+  ignore_errors: yes
+
+- name: "Archive system health report"
+  copy:
+    content: "{{ system_health_report.stdout }}"
+    dest: "/var/log/nightly-health-{{ ansible_date_time.date }}.log"
+    owner: root
+    group: root
+    mode: '0644'
+  when: system_health_report.stdout is defined
+
+- name: "Log nightly maintenance completion"
+  lineinfile:
+    path: "{{ validation_log }}"
+    line: "{{ ansible_date_time.iso8601 }} - Nightly maintenance completed - Updates available: {{ upgradable_packages.stdout | default('unknown') }}, Btrfs optimization: {{ 'success' if btrfs_optimization_result is succeeded else 'failed' }}, Filesystem health archived"

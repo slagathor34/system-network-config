@@ -1,0 +1,105 @@
+---
+# NVIDIA GPU optimization for AI workloads (RTX 3060)
+# These tasks run hourly to ensure GPU is optimally configured
+
+- name: "Install NVIDIA drivers and CUDA toolkit"
+  apt:
+    name:
+      - nvidia-driver-575-open
+      - nvidia-cuda-toolkit
+      - nvidia-utils-575
+    state: present
+    update_cache: yes
+  register: nvidia_installation
+  ignore_errors: yes
+
+- name: "Create NVIDIA configuration directory"
+  file:
+    path: "/etc/nvidia"
+    state: directory
+    mode: '0755'
+
+- name: "Configure NVIDIA application profiles for AI optimization"
+  copy:
+    content: |
+      # NVIDIA Application Profiles for AI/ML Workloads
+      # Optimized for RTX 3060 in AI-focused environment
+      
+      profiles {
+          profile "Ollama AI Service" {
+              rule {
+                  pattern {
+                      feature = "dso"
+                      matches = "*/ollama"
+                  }
+                  setting "GLThreadedOptimizations" = "1"
+                  setting "GLMaxFramesAllowed" = "0"
+                  setting "GLSingleGPUPerfPolicy" = "1"
+                  setting "GLPowerXpertMode" = "1"
+                  setting "GLEnergyOptimization" = "0"
+                  setting "GLShaderPortabilityWarnings" = "0"
+              }
+          }
+      }
+    dest: "/etc/nvidia/nvidia-application-profiles-rc"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: "Configure NVIDIA power management for maximum performance"
+  copy:
+    content: |
+      # NVIDIA GPU power management optimization for AI workloads
+      # Maximum performance mode for RTX 3060 in AI-only environment
+      
+      options nvidia NVreg_PowerMizerEnable=0
+      options nvidia NVreg_PowerMizerLevel=0
+      options nvidia NVreg_PowerMizerDefault=1
+      options nvidia NVreg_DynamicPowerManagement=0
+      options nvidia_drm modeset=1
+    dest: "/etc/modprobe.d/nvidia-power.conf"
+    owner: root
+    group: root
+    mode: '0644'
+  register: nvidia_power_config
+
+- name: "Create NVIDIA performance optimization service"
+  copy:
+    content: |
+      [Unit]
+      Description=NVIDIA GPU Performance Optimization
+      After=graphical.target
+      Requires=nvidia-persistenced.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/bin/bash -c 'nvidia-smi -pm 1; nvidia-smi -ac 1215,1777; nvidia-smi --auto-boost-default=0 --auto-boost-permission=0; echo performance > /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor'
+      ExecReload=/bin/bash -c 'nvidia-smi -pm 1; nvidia-smi -ac 1215,1777; nvidia-smi --auto-boost-default=0 --auto-boost-permission=0'
+
+      [Install]
+      WantedBy=multi-user.target
+    dest: "/etc/systemd/system/nvidia-performance.service"
+    owner: root
+    group: root
+    mode: '0644'
+  register: nvidia_performance_service
+
+- name: "Enable and reload NVIDIA performance service"
+  systemd:
+    name: nvidia-performance
+    daemon_reload: yes
+    enabled: yes
+    state: started
+  when: nvidia_performance_service.changed
+  ignore_errors: yes
+
+- name: "Verify GPU detection and optimization"
+  shell: "nvidia-smi --query-gpu=name,memory.total,power.management --format=csv,noheader,nounits"
+  register: gpu_verification
+  ignore_errors: yes
+
+- name: "Log GPU optimization status"
+  lineinfile:
+    path: "{{ validation_log }}"
+    line: "{{ ansible_date_time.iso8601 }} - GPU optimization {{ 'configured - ' + gpu_verification.stdout if gpu_verification.rc == 0 else 'pending (driver installation/reboot required)' }}"

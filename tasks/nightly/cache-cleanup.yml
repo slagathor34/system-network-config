@@ -1,0 +1,103 @@
+---
+# Nightly cache cleanup and maintenance tasks
+# These tasks run nightly to clean up system caches and temporary files
+
+- name: "Clean apt package cache"
+  apt:
+    autoclean: yes
+    autoremove: yes
+  register: apt_cleanup_result
+
+- name: "Clean Docker system cache (containers, images, networks)"
+  shell: |
+    docker system prune -f --volumes
+    docker image prune -a -f
+  register: docker_cleanup_result
+  ignore_errors: yes
+
+- name: "Clean systemd journal logs older than 7 days"
+  shell: journalctl --vacuum-time=7d
+  register: journal_cleanup_result
+  ignore_errors: yes
+
+- name: "Clean temporary files in /tmp older than 7 days"
+  find:
+    paths: "/tmp"
+    age: "7d"
+    file_type: any
+    recurse: yes
+  register: tmp_files_found
+
+- name: "Remove old temporary files"
+  file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ tmp_files_found.files }}"
+  when: tmp_files_found.files is defined
+
+- name: "Clean Ollama model cache (keep only recent models)"
+  shell: |
+    find /opt/storage/lab-fast/projects/hosted-services/ollama -name "*.blob" -mtime +30 -type f
+  register: old_ollama_models
+  ignore_errors: yes
+
+- name: "Remove old Ollama model files"
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ old_ollama_models.stdout_lines | default([]) }}"
+  when: old_ollama_models.stdout_lines is defined
+
+- name: "Clean pip cache"
+  shell: pip cache purge
+  register: pip_cleanup_result
+  ignore_errors: yes
+
+- name: "Clean npm cache (if present)"
+  shell: npm cache clean --force
+  register: npm_cleanup_result
+  ignore_errors: yes
+
+- name: "Clean thumbnails and user caches"
+  find:
+    paths: 
+      - "/home/*/.cache"
+      - "/root/.cache"
+    age: "30d"
+    file_type: any
+    recurse: yes
+  register: user_cache_files
+  ignore_errors: yes
+
+- name: "Remove old user cache files"
+  file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ user_cache_files.files | default([]) }}"
+  when: user_cache_files.files is defined
+
+- name: "Clean old network backup files (keep last 30 days)"
+  find:
+    paths: "/etc/netplan/ansible-backup"
+    age: "30d"
+    file_type: directory
+  register: old_backups
+
+- name: "Remove old network backups"
+  file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ old_backups.files | default([]) }}"
+  when: old_backups.files is defined
+
+- name: "Rotate and compress large log files"
+  shell: |
+    find /var/log -name "*.log" -size +100M -exec gzip {} \;
+    find /var/log -name "*.log.gz" -mtime +30 -delete
+  register: log_rotation_result
+  ignore_errors: yes
+
+- name: "Log cleanup completion with statistics"
+  lineinfile:
+    path: "{{ validation_log }}"
+    line: "{{ ansible_date_time.iso8601 }} - Nightly cleanup completed - APT: {{ 'success' if apt_cleanup_result is succeeded else 'failed' }}, Docker: {{ 'success' if docker_cleanup_result is succeeded else 'failed' }}, Journal: {{ 'success' if journal_cleanup_result is succeeded else 'failed' }}"
