@@ -84,6 +84,23 @@
     mode: '0644'
     content: |
       services:
+        mcp-gateway:
+          image: "docker/mcp-gateway:latest"
+          container_name: mcp-gateway
+          restart: unless-stopped
+          ports:
+            - "3000:3000"
+          volumes:
+            - "/var/run/docker.sock:/var/run/docker.sock"
+            - "/opt/storage/lab-fast/mcp-deployment/data:/data"
+          environment:
+            - MCP_DATA_DIR=/data
+            - MCP_LOG_LEVEL=info
+          networks:
+            - mcp-network
+          labels:
+            - "com.docker.compose.project=mcp-deployment"
+            
         duckduckgo-server:
           image: "mcp/duckduckgo:latest"
           container_name: mcp-duckduckgo
@@ -146,23 +163,6 @@
             - SQLITE_DB_PATH=/data
           labels:
             - "mcp.server=sqlite"
-            - "com.docker.compose.project=mcp-deployment"
-            
-        nginx-proxy:
-          image: "nginx:alpine"
-          container_name: mcp-proxy
-          restart: unless-stopped
-          ports:
-            - "3000:80"
-          volumes:
-            - "/opt/storage/lab-fast/mcp-deployment/nginx.conf:/etc/nginx/nginx.conf:ro"
-          networks:
-            - mcp-network
-          depends_on:
-            - duckduckgo-server
-            - filesystem-server
-            - sqlite-server
-          labels:
             - "com.docker.compose.project=mcp-deployment"
             
       networks:
@@ -275,7 +275,7 @@
 - name: "Pull MCP container images"
   shell: "docker pull {{ item }}"
   loop:
-    - "nginx:alpine"
+    - "docker/mcp-gateway:latest"
     - "mcp/duckduckgo:latest"
     - "mcp/filesystem:latest"
     - "mcp/sqlite:latest"
