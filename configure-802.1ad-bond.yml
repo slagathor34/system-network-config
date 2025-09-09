@@ -21,9 +21,8 @@
         dhcp4: true
         dhcp6: true
       - id: 500
-        dhcp4: false
-        dhcp6: false
-        bridge: "bridgeLab"
+        dhcp4: true
+        dhcp6: true
       - id: 700
         dhcp4: true
         dhcp6: true
@@ -52,6 +51,12 @@
       register: backup_result
       when: not backup_exists.stat.exists
       changed_when: true
+
+    - name: Disable 802.1ad dispatcher script to use standard 802.1Q VLANs
+      file:
+        path: "/etc/networkd-dispatcher/routable.d/10-qinq-setup"
+        state: absent
+      notify: Restart NetworkManager
 
     - name: Store current NetworkManager connections for rollback
       shell: nmcli -t connection show | grep -E "(bond0|enp9s0f0|enp9s0f1|bond0\.)" > {{ backup_dir }}/{{ timestamp }}/nm_connections.txt
@@ -110,6 +115,7 @@
         updelay: "{{ bond_updelay }}"
         downdelay: "{{ bond_downdelay }}"
         mac: "{{ bond_mac }}"
+        xmit_hash_policy: "layer2"
         state: present
       when: bond_exists.rc != 0
 
@@ -132,6 +138,7 @@
         updelay: "{{ bond_updelay }}"
         downdelay: "{{ bond_downdelay }}"
         mac: "{{ bond_mac }}"
+        xmit_hash_policy: "layer2"
         state: present
       when: 
         - bond_exists.rc == 0
@@ -292,6 +299,11 @@
       shell: cat /proc/net/bonding/bond0
       register: final_bond_status
       listen: "verify_bond_status"
+
+    - name: Restart NetworkManager
+      systemd:
+        name: NetworkManager
+        state: restarted
 
   post_tasks:
     - name: Display configuration summary
