@@ -1,0 +1,334 @@
+---
+# Nextcloud Management - Complete configuration management and maintenance
+# Part of the ansible-pull automation system
+
+- name: "Nextcloud Management - Set deployment variables"
+  set_fact:
+    nextcloud_base_dir: "/opt/storage/lab-fast/projects/hosted-services/nextcloud"
+    nextcloud_config_file: "/opt/storage/lab-fast/projects/hosted-services/nextcloud/config/config.php"
+    nextcloud_hpb_config: "/opt/storage/lab-fast/projects/hosted-services/nextcloud/hpb/server.conf"
+    nextcloud_enabled: true  # Set to false to disable Nextcloud management
+
+- name: "Nextcloud Management - Check if Nextcloud is deployed"
+  stat:
+    path: "{{ nextcloud_config_file }}"
+  register: nextcloud_config_exists
+  when: nextcloud_enabled | default(true) | bool
+
+- name: "Nextcloud Management - Check if HPB config exists"
+  stat:
+    path: "{{ nextcloud_hpb_config }}"
+  register: nextcloud_hpb_exists
+  when: nextcloud_enabled | default(true) | bool
+
+- name: "Nextcloud Management - Get current system hostname and IPs"
+  set_fact:
+    system_hostname: "{{ ansible_hostname }}"
+    system_fqdn: "{{ ansible_fqdn }}"
+    system_ips: "{{ ansible_all_ipv4_addresses }}"
+  when: nextcloud_enabled | default(true) | bool and nextcloud_config_exists.stat.exists
+
+- name: "Nextcloud Management - Define comprehensive trusted domains list"
+  set_fact:
+    nextcloud_trusted_domains:
+      - 'localhost'
+      - 'nebula.brainstormes.org:8080'
+      - 'nebula.brainstormes.org'
+      - 'cloud.brainstormes.org'
+      - "{{ system_hostname }}"
+      - "{{ system_fqdn }}"
+      - '127.0.0.1'
+      - 'localhost:8080'
+      - '127.0.0.1:8080'
+      # Add all system IP addresses
+      - '192.168.1.25'
+      - '192.168.1.117'
+      - '192.168.7.77'
+      - '192.168.2.27'
+      - '192.168.6.77'
+      - '10.1.123.64'
+      - '172.17.0.1'
+      - '192.168.122.1'
+      - '172.18.0.1'
+      - '172.21.0.1'
+      - '172.19.0.1'
+      - '172.20.0.1'
+      - '172.20.0.4'
+  when: nextcloud_enabled | default(true) | bool and nextcloud_config_exists.stat.exists
+
+- name: "Nextcloud Management - Read current Nextcloud config"
+  slurp:
+    src: "{{ nextcloud_config_file }}"
+  register: current_nextcloud_config
+  when: nextcloud_enabled | default(true) | bool and nextcloud_config_exists.stat.exists
+
+- name: "Nextcloud Management - Check if trusted domains need updating"
+  set_fact:
+    config_needs_update: true
+  when: >
+    nextcloud_enabled | default(true) | bool and 
+    nextcloud_config_exists.stat.exists and 
+    ('cloud.brainstormes.org' not in (current_nextcloud_config.content | b64decode) or 
+     'nebula.brainstormes.org:8080' not in (current_nextcloud_config.content | b64decode))
+
+- name: "Nextcloud Management - Check if protocol needs updating to HTTPS"
+  set_fact:
+    protocol_needs_update: true
+  when: >
+    nextcloud_enabled | default(true) | bool and 
+    nextcloud_config_exists.stat.exists and 
+    "'overwriteprotocol' => 'http'" in (current_nextcloud_config.content | b64decode)
+
+- name: "Nextcloud Management - Check if overwrite host needs updating"
+  set_fact:
+    overwrite_needs_update: true
+  when: >
+    nextcloud_enabled | default(true) | bool and 
+    nextcloud_config_exists.stat.exists and 
+    ('overwritehost' not in (current_nextcloud_config.content | b64decode) or 
+     'cloud.brainstormes.org' not in (current_nextcloud_config.content | b64decode))
+
+- name: "Nextcloud Management - Backup current config"
+  copy:
+    src: "{{ nextcloud_config_file }}"
+    dest: "{{ nextcloud_config_file }}.backup.{{ ansible_date_time.epoch }}"
+    owner: www-data
+    group: www-data
+    mode: '0640'
+  become: yes
+  when: >
+    nextcloud_enabled | default(true) | bool and 
+    nextcloud_config_exists.stat.exists and 
+    (config_needs_update | default(false) or 
+     protocol_needs_update | default(false) or 
+     overwrite_needs_update | default(false))
+
+- name: "Nextcloud Management - Temporarily disable read-only mode for updates"
+  replace:
+    path: "{{ nextcloud_config_file }}"
+    regexp: "'config_is_read_only' => true"
+    replace: "'config_is_read_only' => false"
+  become: yes
+  when: >
+    nextcloud_enabled | default(true) | bool and 
+    nextcloud_config_exists.stat.exists and 
+    (config_needs_update | default(false) or 
+     protocol_needs_update | default(false) or 
+     overwrite_needs_update | default(false))
+  register: readonly_disabled
+
+- name: "Nextcloud Management - Update trusted domains configuration"
+  replace:
+    path: "{{ nextcloud_config_file }}"
+    regexp: "('trusted_domains' =>\\s*\\n\\s*array \\()([\\s\\S]*?)(\\),)"
+    replace: |
+      \1
+        0 => 'localhost',
+        1 => 'nebula.brainstormes.org:8080',
+        2 => 'nebula.brainstormes.org',
+        3 => 'cloud.brainstormes.org',
+        4 => '{{ system_hostname }}',
+        5 => '127.0.0.1',
+        6 => 'localhost:8080',
+        7 => '127.0.0.1:8080',
+        8 => '192.168.1.25',
+        9 => '192.168.1.117',
+        10 => '192.168.7.77',
+        11 => '192.168.2.27',
+        12 => '192.168.6.77',
+        13 => '10.1.123.64',
+        14 => '172.17.0.1',
+        15 => '192.168.122.1',
+        16 => '172.18.0.1',
+        17 => '172.21.0.1',
+        18 => '172.19.0.1',
+        19 => '172.20.0.1',
+        20 => '172.20.0.4',
+      \3
+  become: yes
+  when: >
+    nextcloud_enabled | default(true) | bool and 
+    nextcloud_config_exists.stat.exists and 
+    config_needs_update | default(false)
+  register: config_updated
+
+- name: "Nextcloud Management - Set protocol to HTTPS for external access"
+  replace:
+    path: "{{ nextcloud_config_file }}"
+    regexp: "'overwriteprotocol' => 'http'"
+    replace: "'overwriteprotocol' => 'https'"
+  become: yes
+  when: >
+    nextcloud_enabled | default(true) | bool and 
+    nextcloud_config_exists.stat.exists and 
+    protocol_needs_update | default(false)
+  register: protocol_updated
+
+- name: "Nextcloud Management - Set CLI URL to cloud.brainstormes.org"
+  replace:
+    path: "{{ nextcloud_config_file }}"
+    regexp: "'overwrite\\.cli\\.url' => '[^']+'"
+    replace: "'overwrite.cli.url' => 'https://cloud.brainstormes.org'"
+  become: yes
+  when: >
+    nextcloud_enabled | default(true) | bool and 
+    nextcloud_config_exists.stat.exists
+  register: cli_url_updated
+
+- name: "Nextcloud Management - Ensure overwritehost is set to cloud.brainstormes.org"
+  lineinfile:
+    path: "{{ nextcloud_config_file }}"
+    regexp: "  'overwritehost' =>"
+    line: "  'overwritehost' => 'cloud.brainstormes.org',"
+    insertafter: "'overwrite.cli.url' =>"
+  become: yes
+  when: >
+    nextcloud_enabled | default(true) | bool and 
+    nextcloud_config_exists.stat.exists
+  register: host_updated
+
+- name: "Nextcloud Management - Re-enable read-only mode"
+  replace:
+    path: "{{ nextcloud_config_file }}"
+    regexp: "'config_is_read_only' => false"
+    replace: "'config_is_read_only' => true"
+  become: yes
+  when: >
+    nextcloud_enabled | default(true) | bool and 
+    nextcloud_config_exists.stat.exists and 
+    readonly_disabled is defined and readonly_disabled.changed
+
+- name: "Nextcloud Management - Update HPB backend allowlist"
+  replace:
+    path: "{{ nextcloud_hpb_config }}"
+    regexp: "allowed = [^\\n]+"
+    replace: "allowed = nebula.brainstormes.org:8080,nebula.brainstormes.org,cloud.brainstormes.org,nextcloud-app,localhost,172.20.0.4"
+  become: yes
+  when: >
+    nextcloud_enabled | default(true) | bool and 
+    nextcloud_hpb_exists.stat.exists
+  register: hpb_updated
+
+- name: "Nextcloud Management - Ensure HPB NATS uses correct IP"
+  replace:
+    path: "{{ nextcloud_hpb_config }}"
+    regexp: "url = nats://nextcloud-nats:4222"
+    replace: "url = nats://172.20.0.2:4222"
+  become: yes
+  when: >
+    nextcloud_enabled | default(true) | bool and 
+    nextcloud_hpb_exists.stat.exists
+  register: hpb_nats_updated
+
+- name: "Nextcloud Management - Fix config file permissions"
+  file:
+    path: "{{ nextcloud_config_file }}"
+    owner: www-data
+    group: www-data
+    mode: '0640'
+  become: yes
+  when: nextcloud_enabled | default(true) | bool and nextcloud_config_exists.stat.exists
+
+- name: "Nextcloud Management - Check if Nextcloud containers are running"
+  command: docker ps -q -f name=nextcloud-app
+  register: nextcloud_running
+  changed_when: false
+  become: yes
+  when: nextcloud_enabled | default(true) | bool
+
+- name: "Nextcloud Management - Check if HPB container is running"
+  command: docker ps -q -f name=nextcloud-hpb
+  register: hpb_running
+  changed_when: false
+  become: yes
+  when: nextcloud_enabled | default(true) | bool
+
+- name: "Nextcloud Management - Restart Nextcloud app container"
+  command: docker restart nextcloud-app
+  become: yes
+  when: >
+    nextcloud_enabled | default(true) | bool and 
+    nextcloud_running.stdout and
+    (config_updated is defined and config_updated.changed) or 
+    (protocol_updated is defined and protocol_updated.changed) or 
+    (cli_url_updated is defined and cli_url_updated.changed) or
+    (host_updated is defined and host_updated.changed)
+  register: nextcloud_restarted
+
+- name: "Nextcloud Management - Restart HPB container"
+  command: docker restart nextcloud-hpb
+  become: yes
+  when: >
+    nextcloud_enabled | default(true) | bool and 
+    hpb_running.stdout and
+    ((hpb_updated is defined and hpb_updated.changed) or 
+     (hpb_nats_updated is defined and hpb_nats_updated.changed))
+  register: hpb_restarted
+
+- name: "Nextcloud Management - Wait for Nextcloud to be ready"
+  wait_for:
+    port: 443
+    host: localhost
+    delay: 5
+    timeout: 30
+  when: >
+    nextcloud_enabled | default(true) | bool and 
+    nextcloud_restarted is defined and nextcloud_restarted.changed
+
+- name: "Nextcloud Management - Test Nextcloud access"
+  uri:
+    url: "https://localhost:8080/status.php"
+    method: GET
+    status_code: [200, 302]
+    validate_certs: no
+  register: nextcloud_status
+  ignore_errors: yes
+  when: nextcloud_enabled | default(true) | bool and nextcloud_running.stdout
+
+- name: "Nextcloud Management - Update richdocuments app configuration via OCC"
+  command: >
+    docker exec nextcloud-app php occ config:app:set richdocuments 
+    {{ item.key }} --value="{{ item.value }}"
+  become: yes
+  loop:
+    - { key: "wopi_url", value: "https://cloud.brainstormes.org/custom_apps/richdocumentscode/proxy.php?req=" }
+    - { key: "public_wopi_url", value: "https://cloud.brainstormes.org/custom_apps/richdocumentscode/proxy.php?req=" }
+    - { key: "document_base_url", value: "https://cloud.brainstormes.org" }
+    - { key: "wopi_allowlist", value: "nebula.brainstormes.org,cloud.brainstormes.org,localhost,127.0.0.1,192.168.1.25" }
+  when: >
+    nextcloud_enabled | default(true) | bool and 
+    nextcloud_running.stdout
+  ignore_errors: yes
+  register: richdocuments_updated
+
+- name: "Nextcloud Management - Get container status"
+  command: docker ps -f name=nextcloud --format "{{ .Names }} - {{ .Status }} - {{ .Ports }}"
+  register: nextcloud_containers
+  failed_when: false
+  changed_when: false
+  become: yes
+  when: nextcloud_enabled | default(true) | bool
+
+- name: "Nextcloud Management - Log configuration status"
+  debug:
+    msg: |
+      Nextcloud Management Status:
+      - Service: {{ 'ENABLED' if nextcloud_enabled else 'DISABLED' }}
+      - Config exists: {{ 'YES' if nextcloud_config_exists.stat.exists else 'NO' }}
+      - Config updated: {{ 'YES' if (config_updated is defined and config_updated.changed) else 'NO' }}
+      - Protocol updated: {{ 'YES' if (protocol_updated is defined and protocol_updated.changed) else 'NO' }}
+      - HPB updated: {{ 'YES' if (hpb_updated is defined and hpb_updated.changed) else 'NO' }}
+      - Container running: {{ 'YES' if nextcloud_running.stdout else 'NO' }}
+      - HPB running: {{ 'YES' if hpb_running.stdout else 'NO' }}
+      - Container restarted: {{ 'YES' if (nextcloud_restarted is defined and nextcloud_restarted.changed) else 'NO' }}
+      - HPB restarted: {{ 'YES' if (hpb_restarted is defined and hpb_restarted.changed) else 'NO' }}
+      - Status check: {{ 'SUCCESS' if (nextcloud_status is defined and nextcloud_status.status in [200, 302]) else 'FAILED/SKIPPED' }}
+      - Web interface: https://cloud.brainstormes.org (https://localhost:8080)
+      - Hostname: {{ system_hostname | default('unknown') }}
+      - Container details: {{ nextcloud_containers.stdout_lines | join(', ') if nextcloud_containers.stdout_lines else 'Not Available' }}
+
+- name: "Nextcloud Management - Send log message"
+  shell: |
+    logger -p user.info -t "ansible-pull-nextcloud" "Nextcloud configuration management completed - Config updated: {{ 'Yes' if (config_updated is defined and config_updated.changed) else 'No' }}, Protocol: {{ 'HTTPS' if (protocol_updated is defined and protocol_updated.changed) else 'Current' }}, Container: {{ 'Running' if nextcloud_running.stdout else 'Stopped' }}, HPB: {{ 'Running' if hpb_running.stdout else 'Stopped' }}"
+  become: yes
+  when: nextcloud_enabled | default(true) | bool
