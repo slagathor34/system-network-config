@@ -1,0 +1,146 @@
+---
+# NUT (Network UPS Tools) Client Management
+# Configures system to receive UPS notifications from storage.brainstormes.org
+# Handles graceful shutdown during power outages
+
+- name: "Install NUT client packages"
+  apt:
+    name:
+      - nut-client
+      - nut-monitor
+    state: present
+    update_cache: yes
+
+- name: "Configure NUT client mode"
+  lineinfile:
+    path: /etc/nut/nut.conf
+    regexp: '^MODE='
+    line: 'MODE=netclient'
+    create: yes
+
+- name: "Configure UPS monitoring from storage.brainstormes.org"
+  blockinfile:
+    path: /etc/nut/upsmon.conf
+    marker: "# {mark} ANSIBLE MANAGED UPS CONFIGURATION"
+    block: |
+      # Monitor UPS from storage.brainstormes.org
+      MONITOR ups@storage.brainstormes.org 1 upsmon upspass slave
+      
+      # Shutdown settings
+      SHUTDOWNCMD "/sbin/shutdown -h +0"
+      POLLFREQ 5
+      POLLFREQALERT 5
+      HOSTSYNC 15
+      DEADTIME 15
+      POWERDOWNFLAG /etc/killpower
+      
+      # Notification settings
+      NOTIFYCMD /usr/sbin/upssched
+      NOTIFYFLAG ONBATT SYSLOG+WALL+EXEC
+      NOTIFYFLAG LOWBATT SYSLOG+WALL+EXEC
+      NOTIFYFLAG FSD SYSLOG+WALL+EXEC
+      NOTIFYFLAG COMMOK SYSLOG+WALL+EXEC
+      NOTIFYFLAG COMMBAD SYSLOG+WALL+EXEC
+      NOTIFYFLAG SHUTDOWN SYSLOG+WALL+EXEC
+      NOTIFYFLAG REPLBATT SYSLOG+WALL+EXEC
+      
+      # Poll only - don't shut down immediately
+      RBWARNTIME 43200
+      NOCOMMWARNTIME 300
+    create: yes
+
+- name: "Configure UPS scheduler for delayed actions"
+  blockinfile:
+    path: /etc/nut/upssched.conf
+    marker: "# {mark} ANSIBLE MANAGED UPS SCHEDULER"
+    block: |
+      CMDSCRIPT /etc/nut/upssched-cmd
+      PIPEFN /var/run/nut/upssched.pipe
+      LOCKFN /var/run/nut/upssched.lock
+      
+      # On battery - wait 60 seconds before logging
+      AT ONBATT * START-TIMER onbatt 60
+      AT ONLINE * CANCEL-TIMER onbatt
+      AT ONLINE * EXECUTE online
+      
+      # Low battery - immediate action
+      AT LOWBATT * EXECUTE lowbatt
+      
+      # Communication issues
+      AT COMMBAD * START-TIMER commbad 30
+      AT COMMOK * CANCEL-TIMER commbad
+    create: yes
+
+- name: "Create UPS scheduler command script"
+  copy:
+    dest: /etc/nut/upssched-cmd
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # UPS Scheduler Command Script
+      
+      case $1 in
+        onbatt)
+          logger "UPS: Running on battery power - monitoring situation"
+          wall "UPS Alert: System is running on battery power from storage.brainstormes.org"
+          ;;
+        online)
+          logger "UPS: Power restored - system back to normal operation"
+          wall "UPS Status: AC power restored - system operating normally"
+          ;;
+        lowbatt)
+          logger "UPS: LOW BATTERY - Initiating graceful shutdown"
+          wall "UPS CRITICAL: Low battery detected - System will shutdown shortly"
+          /usr/sbin/upsmon -c fsd
+          ;;
+        commbad)
+          logger "UPS: Communication lost with storage.brainstormes.org UPS server"
+          wall "UPS Warning: Lost communication with UPS server at storage.brainstormes.org"
+          ;;
+        *)
+          logger "UPS: Unknown command: $1"
+          ;;
+      esac
+
+- name: "Set proper permissions on NUT configuration files"
+  file:
+    path: "{{ item }}"
+    owner: root
+    group: nut
+    mode: '0640'
+  loop:
+    - /etc/nut/upsmon.conf
+    - /etc/nut/upssched.conf
+  ignore_errors: yes
+
+- name: "Enable and start NUT monitor service"
+  systemd:
+    name: nut-monitor.service
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: "Test UPS connectivity to storage.brainstormes.org"
+  shell: upsc ups@storage.brainstormes.org 2>/dev/null || echo "UPS_UNREACHABLE"
+  register: ups_test
+  changed_when: false
+  failed_when: false
+
+- name: "Log UPS connectivity status"
+  lineinfile:
+    path: /var/log/ansible-pull-network.log
+    line: "{{ ansible_date_time.iso8601 }} - NUT: {{ 'Connected to UPS at storage.brainstormes.org' if 'UPS_UNREACHABLE' not in ups_test.stdout else 'Unable to connect to UPS at storage.brainstormes.org - check network connectivity' }}"
+    create: yes
+
+- name: "Verify NUT monitor service status"
+  systemd:
+    name: nut-monitor.service
+  register: nut_status
+
+- name: "Log NUT service status"
+  lineinfile:
+    path: /var/log/ansible-pull-network.log
+    line: "{{ ansible_date_time.iso8601 }} - NUT Monitor Service: {{ nut_status.status.ActiveState | default('unknown') }}"
+    create: yes
+
+

@@ -53,6 +53,9 @@
         - name: "GPU optimization management"
           include_tasks: tasks/hourly/gpu-optimization.yml
 
+        - name: "NUT (Network UPS Tools) management"
+          include_tasks: tasks/hourly/nut-management.yml
+
       rescue:
         - name: "Log hourly task failure"
           lineinfile:
