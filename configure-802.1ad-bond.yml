@@ -110,8 +110,6 @@
         updelay: "{{ bond_updelay }}"
         downdelay: "{{ bond_downdelay }}"
         mac: "{{ bond_mac }}"
-        ip4: 'auto'
-        ip6: 'auto'
         state: present
       when: bond_exists.rc != 0
 
