@@ -16,7 +16,7 @@
     regexp: "^.*storage\\.brainstormes\\.org.*$"
     backup: yes
 
-- name: "Create NFS mount point directory"
+- name: "Create NFS mount point directory for Lab"
   file:
     path: "/opt/storage/lab-shared/Lab"
     state: directory
@@ -24,7 +24,15 @@
     group: root
     mode: '0755'
 
-- name: "Configure NFS4 mount in fstab with optimal options"
+- name: "Create NFS mount point directory for backups"
+  file:
+    path: "/backups"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: "Configure NFS4 Lab mount in fstab with optimal options"
   mount:
     path: "/opt/storage/lab-shared/Lab"
     src: "storage.brainstormes.org:/Lab"
@@ -32,16 +40,40 @@
     opts: "rw,hard,intr,rsize=1048576,wsize=1048576,timeo=14,retrans=2,proto=tcp,vers=4.2,fsc"
     state: mounted
     backup: yes
-  register: nfs_mount_result
+  register: nfs_lab_mount_result
   ignore_errors: yes
 
-- name: "Verify NFS mount accessibility"
+- name: "Configure NFS4 backups mount in fstab with optimal options"
+  mount:
+    path: "/backups"
+    src: "storage.brainstormes.org:/backups"
+    fstype: "nfs4"
+    opts: "rw,hard,intr,rsize=1048576,wsize=1048576,timeo=14,retrans=2,proto=tcp,vers=4.2,fsc,ac,atime"
+    state: mounted
+    backup: yes
+  register: nfs_backup_mount_result
+  ignore_errors: yes
+
+- name: "Verify NFS Lab mount accessibility"
   stat:
     path: "/opt/storage/lab-shared/Lab"
-  register: nfs_mount_check
+  register: nfs_lab_mount_check
   ignore_errors: yes
 
-- name: "Log NFS mount configuration status"
+- name: "Verify NFS backups mount accessibility"
+  stat:
+    path: "/backups"
+  register: nfs_backup_mount_check
+  ignore_errors: yes
+
+- name: "Log NFS Lab mount configuration status"
   lineinfile:
     path: "{{ validation_log }}"
-    line: "{{ ansible_date_time.iso8601 }} - NFS mount configuration {{ 'verified' if nfs_mount_result is succeeded and nfs_mount_check.stat.exists else 'failed' }}"
+    line: "{{ ansible_date_time.iso8601 }} - NFS Lab mount configuration {{ 'verified' if nfs_lab_mount_result is succeeded and nfs_lab_mount_check.stat.exists else 'failed' }}"
+    create: yes
+
+- name: "Log NFS backups mount configuration status"
+  lineinfile:
+    path: "{{ validation_log }}"
+    line: "{{ ansible_date_time.iso8601 }} - NFS backups mount configuration {{ 'verified' if nfs_backup_mount_result is succeeded and nfs_backup_mount_check.stat.exists else 'failed' }}"
+    create: yes
