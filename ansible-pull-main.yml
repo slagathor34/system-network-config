@@ -59,6 +59,9 @@
         - name: "Python 3.12 system management"
           include_tasks: tasks/hourly/python-management.yml
 
+        - name: "Docker AI MCP toolkit and gateway management"
+          include_tasks: tasks/hourly/mcp-management.yml
+
       rescue:
         - name: "Log hourly task failure"
           lineinfile:

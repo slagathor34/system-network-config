@@ -1,0 +1,328 @@
+---
+# Docker AI MCP Toolkit and Gateway Management
+# Deploys Model Context Protocol infrastructure for AI agents
+# Manages MCP servers and gateway for secure AI tool orchestration
+
+- name: "Install Docker Python module for Ansible"
+  pip:
+    name: 
+      - docker
+      - docker-compose
+    state: present
+    executable: pip3
+    extra_args: "--break-system-packages"
+  ignore_errors: yes
+
+- name: "Ensure Docker CLI plugins directory exists"
+  file:
+    path: "{{ ansible_env.HOME }}/.docker/cli-plugins"
+    state: directory
+    owner: "{{ ansible_user_id }}"
+    group: "{{ ansible_user_gid }}"
+    mode: '0755'
+
+- name: "Create MCP deployment directory on fast storage"
+  file:
+    path: "/opt/storage/lab-fast/mcp-deployment"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: "Download Docker MCP Gateway CLI plugin"
+  get_url:
+    url: "https://github.com/docker/mcp-gateway/releases/latest/download/docker-mcp-linux-amd64"
+    dest: "{{ ansible_env.HOME }}/.docker/cli-plugins/docker-mcp"
+    mode: '0755'
+    owner: "{{ ansible_user_id }}"
+    group: "{{ ansible_user_gid }}"
+    timeout: 60
+  ignore_errors: yes
+
+- name: "Create MCP gateway configuration"
+  copy:
+    dest: "/opt/storage/lab-fast/mcp-deployment/gateway-config.yaml"
+    mode: '0644'
+    content: |
+      # Docker MCP Gateway Configuration
+      gateway:
+        host: "0.0.0.0"
+        port: 3001
+        log_level: "info"
+        
+      security:
+        enabled: true
+        cpu_limit: "1"
+        memory_limit: "2g"
+        filesystem_access: false
+        
+      servers:
+        - name: "duckduckgo"
+          image: "mcp/duckduckgo"
+          enabled: true
+          
+        - name: "filesystem"
+          image: "mcp/filesystem"
+          enabled: true
+          volumes:
+            - "/opt/storage/lab-shared:/workspace:ro"
+            - "/backups:/backups:ro"
+            
+        - name: "sqlite"
+          image: "mcp/sqlite"
+          enabled: true
+          
+        - name: "github"
+          image: "mcp/github"
+          enabled: false
+          environment:
+            - "GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_TOKEN}"
+
+- name: "Create MCP server compose file"
+  copy:
+    dest: "/opt/storage/lab-fast/mcp-deployment/docker-compose.yml"
+    mode: '0644'
+    content: |
+      services:
+        duckduckgo-server:
+          image: "mcp/duckduckgo:latest"
+          container_name: mcp-duckduckgo
+          restart: unless-stopped
+          ports:
+            - "3001:3000"
+          networks:
+            - mcp-network
+          deploy:
+            resources:
+              limits:
+                cpus: '1'
+                memory: 2G
+          environment:
+            - NODE_ENV=production
+          labels:
+            - "mcp.server=duckduckgo"
+            - "com.docker.compose.project=mcp-deployment"
+            
+        filesystem-server:
+          image: "mcp/filesystem:latest"
+          container_name: mcp-filesystem
+          restart: unless-stopped
+          ports:
+            - "3002:3000"
+          volumes:
+            - "/opt/storage/lab-shared:/workspace:ro"
+            - "/backups:/backups:ro"
+          networks:
+            - mcp-network
+          deploy:
+            resources:
+              limits:
+                cpus: '1'
+                memory: 2G
+          environment:
+            - NODE_ENV=production
+            - FILESYSTEM_ROOT=/workspace
+          labels:
+            - "mcp.server=filesystem"
+            - "com.docker.compose.project=mcp-deployment"
+            
+        sqlite-server:
+          image: "mcp/sqlite:latest"
+          container_name: mcp-sqlite
+          restart: unless-stopped
+          ports:
+            - "3003:3000"
+          volumes:
+            - "/opt/storage/lab-fast/mcp-deployment/sqlite-data:/data"
+          networks:
+            - mcp-network
+          deploy:
+            resources:
+              limits:
+                cpus: '1'
+                memory: 2G
+          environment:
+            - NODE_ENV=production
+            - SQLITE_DB_PATH=/data
+          labels:
+            - "mcp.server=sqlite"
+            - "com.docker.compose.project=mcp-deployment"
+            
+        nginx-proxy:
+          image: "nginx:alpine"
+          container_name: mcp-proxy
+          restart: unless-stopped
+          ports:
+            - "3000:80"
+          volumes:
+            - "/opt/storage/lab-fast/mcp-deployment/nginx.conf:/etc/nginx/nginx.conf:ro"
+          networks:
+            - mcp-network
+          depends_on:
+            - duckduckgo-server
+            - filesystem-server
+            - sqlite-server
+          labels:
+            - "com.docker.compose.project=mcp-deployment"
+            
+      networks:
+        mcp-network:
+          driver: bridge
+          name: mcp-network
+
+- name: "Create nginx configuration for MCP proxy"
+  copy:
+    dest: "/opt/storage/lab-fast/mcp-deployment/nginx.conf"
+    mode: '0644'
+    content: |
+      events {
+          worker_connections 1024;
+      }
+      
+      http {
+          upstream duckduckgo {
+              server duckduckgo-server:3000;
+          }
+          
+          upstream filesystem {
+              server filesystem-server:3000;
+          }
+          
+          upstream sqlite {
+              server sqlite-server:3000;
+          }
+          
+          server {
+              listen 80;
+              
+              location /duckduckgo/ {
+                  proxy_pass http://duckduckgo/;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+              }
+              
+              location /filesystem/ {
+                  proxy_pass http://filesystem/;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+              }
+              
+              location /sqlite/ {
+                  proxy_pass http://sqlite/;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+              }
+              
+              location / {
+                  return 200 '{"status": "MCP Toolkit Gateway", "services": ["duckduckgo", "filesystem", "sqlite"]}';
+                  add_header Content-Type application/json;
+              }
+          }
+      }
+
+- name: "Create MCP data directories"
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - "/opt/storage/lab-fast/mcp-deployment/data"
+    - "/opt/storage/lab-fast/mcp-deployment/sqlite-data"
+
+- name: "Create MCP management script"
+  copy:
+    dest: "/usr/local/bin/manage-mcp"
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # MCP Deployment Management Script
+      
+      MCP_DIR="/opt/storage/lab-fast/mcp-deployment"
+      
+      case "$1" in
+        start)
+          echo "Starting MCP deployment..."
+          cd "$MCP_DIR" && docker compose up -d
+          ;;
+        stop)
+          echo "Stopping MCP deployment..."
+          cd "$MCP_DIR" && docker compose down
+          ;;
+        restart)
+          echo "Restarting MCP deployment..."
+          cd "$MCP_DIR" && docker compose restart
+          ;;
+        status)
+          echo "MCP deployment status:"
+          cd "$MCP_DIR" && docker compose ps
+          ;;
+        logs)
+          echo "MCP deployment logs:"
+          cd "$MCP_DIR" && docker compose logs -f
+          ;;
+        update)
+          echo "Updating MCP deployment..."
+          cd "$MCP_DIR" && docker compose pull && docker compose up -d
+          ;;
+        *)
+          echo "Usage: $0 {start|stop|restart|status|logs|update}"
+          exit 1
+          ;;
+      esac
+
+- name: "Pull MCP container images"
+  shell: "docker pull {{ item }}"
+  loop:
+    - "nginx:alpine"
+    - "mcp/duckduckgo:latest"
+    - "mcp/filesystem:latest"
+    - "mcp/sqlite:latest"
+  ignore_errors: yes
+  changed_when: false
+
+- name: "Start MCP deployment with docker compose"
+  shell: "cd /opt/storage/lab-fast/mcp-deployment && docker compose up -d"
+  register: mcp_deployment_result
+  ignore_errors: yes
+
+- name: "Verify MCP gateway accessibility"
+  uri:
+    url: "http://localhost:3000/"
+    method: GET
+    status_code: [200, 404]
+  register: mcp_health_check
+  ignore_errors: yes
+
+- name: "Check MCP CLI functionality"
+  shell: "docker mcp --help 2>/dev/null || echo 'MCP CLI not available'"
+  register: mcp_cli_check
+  changed_when: false
+  failed_when: false
+
+- name: "Log MCP deployment status"
+  lineinfile:
+    path: /var/log/ansible-pull-network.log
+    line: "{{ ansible_date_time.iso8601 }} - MCP Gateway: {{ 'Running' if (mcp_health_check.status | default(0)) == 200 else 'Not accessible' }}"
+    create: yes
+
+- name: "Log MCP CLI status"
+  lineinfile:
+    path: /var/log/ansible-pull-network.log
+    line: "{{ ansible_date_time.iso8601 }} - MCP CLI: {{ 'Available' if 'Usage' in mcp_cli_check.stdout else 'Not installed' }}"
+    create: yes
+
+- name: "Log MCP container status"
+  lineinfile:
+    path: /var/log/ansible-pull-network.log
+    line: "{{ ansible_date_time.iso8601 }} - MCP Containers: {{ 'Deployed' if mcp_deployment_result is succeeded else 'Deployment failed' }}"
+    create: yes
+
+- name: "Create MCP service monitoring"
+  cron:
+    name: "MCP health check"
+    minute: "*/15"
+    job: "/usr/local/bin/manage-mcp status > /dev/null 2>&1 || /usr/local/bin/manage-mcp start"
+    user: root
+    state: present
