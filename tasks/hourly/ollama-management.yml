@@ -63,20 +63,21 @@
       Group=ollama
       Restart=always
       RestartSec=3
-      Environment="PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/cuda/bin"
-      Environment="LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
+      Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+      Environment="LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu"
       Environment="OLLAMA_HOME=/opt/storage/lab-fast/projects/hosted-services/ollama"
       Environment="CUDA_VISIBLE_DEVICES=0"
       Environment="OLLAMA_GPU_LAYERS=-1"
       Environment="OLLAMA_NUM_GPU=1"
       Environment="OLLAMA_GPU_OVERHEAD=0"
-      Environment="OLLAMA_NUM_THREAD=16"
-      Environment="OLLAMA_MAX_LOADED_MODELS=4"
+      Environment="OLLAMA_NUM_THREAD=24"
+      Environment="OLLAMA_MAX_LOADED_MODELS=2"
       Environment="OLLAMA_FLASH_ATTENTION=1"
-      Environment="OLLAMA_KEEP_ALIVE=24h"
-      Environment="OLLAMA_PARALLEL_REQUESTS=4"
+      Environment="OLLAMA_KEEP_ALIVE=5m"
+      Environment="OLLAMA_PARALLEL_REQUESTS=2"
       Environment="OLLAMA_SCHED_SPREAD=false"
       Environment="OLLAMA_NEW_ENGINE=true"
+      Environment="OLLAMA_HOST=0.0.0.0:11434"
 
       [Install]
       WantedBy=default.target
@@ -93,6 +94,12 @@
     enabled: yes
     state: started
   when: ollama_binary_check.stat.exists or ollama_install_result is succeeded
+
+- name: "Restart Ollama service if configuration changed"
+  systemd:
+    name: ollama
+    state: restarted
+  when: ollama_service_changed.changed
 
 - name: "Verify Ollama service is running"
   wait_for:
