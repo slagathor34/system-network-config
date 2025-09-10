@@ -70,14 +70,27 @@
       Environment="OLLAMA_GPU_LAYERS=-1"
       Environment="OLLAMA_NUM_GPU=1"
       Environment="OLLAMA_GPU_OVERHEAD=0"
-      Environment="OLLAMA_NUM_THREAD=24"
-      Environment="OLLAMA_MAX_LOADED_MODELS=2"
+      Environment="OLLAMA_NUM_THREAD=48"
+      Environment="OLLAMA_MAX_LOADED_MODELS=1"
       Environment="OLLAMA_FLASH_ATTENTION=1"
-      Environment="OLLAMA_KEEP_ALIVE=5m"
-      Environment="OLLAMA_PARALLEL_REQUESTS=2"
+      Environment="OLLAMA_KEEP_ALIVE=0"
+      Environment="OLLAMA_PARALLEL_REQUESTS=1"
       Environment="OLLAMA_SCHED_SPREAD=false"
       Environment="OLLAMA_NEW_ENGINE=true"
       Environment="OLLAMA_HOST=0.0.0.0:11434"
+      Environment="OLLAMA_DEBUG=1"
+      Environment="CUDA_FORCE_PTX_JIT=1"
+      Environment="OLLAMA_FORCE_OFFLOAD=1"
+      Environment="OLLAMA_VRAM_FRACTION=1.0"
+      Environment="OLLAMA_GPU_SPLIT=0"
+      Environment="CUDA_CACHE_DISABLE=0"
+      Environment="CUDA_LAUNCH_BLOCKING=0"
+      Environment="OLLAMA_MAX_QUEUE=1024"
+      Environment="OLLAMA_NUMA=false"
+      Environment="OLLAMA_GPU_TARGET=cuda"
+      Environment="OLLAMA_LLM_LIBRARY=cuda"
+      Environment="OLLAMA_DISABLE_CPU_FALLBACK=1"
+      Environment="CUDA_DEVICE_ORDER=PCI_BUS_ID"
 
       [Install]
       WantedBy=default.target
@@ -94,6 +107,12 @@
     enabled: yes
     state: started
   when: ollama_binary_check.stat.exists or ollama_install_result is succeeded
+
+- name: "Configure GPU for maximum performance"
+  shell: |
+    nvidia-smi -pm 1 || true
+    nvidia-smi -pl 170 || true
+  ignore_errors: yes
 
 - name: "Restart Ollama service if configuration changed"
   systemd:
