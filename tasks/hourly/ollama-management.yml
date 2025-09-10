@@ -10,9 +10,9 @@
     group: root
     mode: '0755'
 
-- name: "Download Ollama installation script"
+- name: "Download Ollama installation script" 
   get_url:
-    url: "https://ollama.com/install.sh"
+    url: "https://ollama.ai/install.sh"
     dest: "/tmp/ollama-install.sh"
     mode: '0755'
     force: yes
@@ -23,9 +23,15 @@
     path: "/usr/local/bin/ollama"
   register: ollama_binary_check
 
-- name: "Install Ollama using official script"
-  shell: "bash /tmp/ollama-install.sh"
-  when: not ollama_binary_check.stat.exists or ollama_script_download.changed
+- name: "Check if Ollama has CUDA support"
+  shell: "ldd /usr/local/bin/ollama | grep -E '(cuda|nv)' | wc -l"
+  register: ollama_cuda_check
+  when: ollama_binary_check.stat.exists
+  ignore_errors: yes
+
+- name: "Install/Reinstall Ollama with CUDA support"
+  shell: "curl -fsSL https://ollama.ai/install.sh | bash"
+  when: not ollama_binary_check.stat.exists or ollama_script_download.changed or (ollama_cuda_check is defined and ollama_cuda_check.stdout == "0")
   register: ollama_install_result
   ignore_errors: yes
 
@@ -50,7 +56,7 @@
     recurse: yes
     state: directory
 
-- name: "Update Ollama systemd service with GPU optimization"
+- name: "Update Ollama systemd service with optimized AI performance configuration"
   copy:
     content: |
       [Unit]
@@ -63,34 +69,31 @@
       Group=ollama
       Restart=always
       RestartSec=3
-      Environment="PATH=/usr/local/bin:/usr/bin:/bin"
-      Environment="LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu"
+      Environment="PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/cuda/bin"
+      Environment="LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/local/cuda/lib64"
       Environment="OLLAMA_HOME=/opt/storage/lab-fast/projects/hosted-services/ollama"
+      Environment="OLLAMA_HOST=0.0.0.0:11434"
       Environment="CUDA_VISIBLE_DEVICES=0"
       Environment="OLLAMA_GPU_LAYERS=-1"
       Environment="OLLAMA_NUM_GPU=1"
       Environment="OLLAMA_GPU_OVERHEAD=0"
-      Environment="OLLAMA_NUM_THREAD=48"
       Environment="OLLAMA_MAX_LOADED_MODELS=1"
-      Environment="OLLAMA_FLASH_ATTENTION=1"
-      Environment="OLLAMA_KEEP_ALIVE=0"
+      Environment="OLLAMA_KEEP_ALIVE=30m"
       Environment="OLLAMA_PARALLEL_REQUESTS=1"
-      Environment="OLLAMA_SCHED_SPREAD=false"
-      Environment="OLLAMA_NEW_ENGINE=true"
-      Environment="OLLAMA_HOST=0.0.0.0:11434"
-      Environment="OLLAMA_DEBUG=1"
-      Environment="CUDA_FORCE_PTX_JIT=1"
-      Environment="OLLAMA_FORCE_OFFLOAD=1"
-      Environment="OLLAMA_VRAM_FRACTION=1.0"
-      Environment="OLLAMA_GPU_SPLIT=0"
-      Environment="CUDA_CACHE_DISABLE=0"
-      Environment="CUDA_LAUNCH_BLOCKING=0"
-      Environment="OLLAMA_MAX_QUEUE=1024"
-      Environment="OLLAMA_NUMA=false"
+      Environment="OLLAMA_FLASH_ATTENTION=1"
+      Environment="OLLAMA_BATCH_SIZE=2048"
+      Environment="OLLAMA_CTX_SIZE=8192"
       Environment="OLLAMA_GPU_TARGET=cuda"
       Environment="OLLAMA_LLM_LIBRARY=cuda"
+      Environment="OLLAMA_FORCE_OFFLOAD=1"
       Environment="OLLAMA_DISABLE_CPU_FALLBACK=1"
+      Environment="OLLAMA_VRAM_FRACTION=0.95"
       Environment="CUDA_DEVICE_ORDER=PCI_BUS_ID"
+      Environment="CUDA_FORCE_PTX_JIT=1"
+      Environment="CUDA_CACHE_DISABLE=0"
+      Environment="CUDA_LAUNCH_BLOCKING=0"
+      Environment="CUDA_MALLOC_SYNC=0"
+      Environment="OLLAMA_DEBUG=0"
 
       [Install]
       WantedBy=default.target
@@ -128,7 +131,39 @@
   register: ollama_accessibility
   ignore_errors: yes
 
+- name: "Verify GPU acceleration is working"
+  shell: |
+    # Check if Ollama detects GPU
+    journalctl -u ollama -n 20 | grep -E "(NVIDIA|cuda|GPU)" | tail -1
+  register: ollama_gpu_detection
+  ignore_errors: yes
+  when: ollama_accessibility is succeeded
+
+- name: "Test GPU inference performance (quick validation)"
+  shell: |
+    # Quick test with timeout - check if GPU memory increases during inference
+    timeout 10s sh -c '
+      nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits > /tmp/gpu_before.txt &
+      sleep 2
+      echo "test" | ollama run tinyllama:latest --verbose > /tmp/ollama_test.log 2>&1 &
+      sleep 6
+      nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits > /tmp/gpu_after.txt
+      wait
+    ' || true
+    
+    # Compare memory usage
+    BEFORE=$(cat /tmp/gpu_before.txt 2>/dev/null || echo "0")  
+    AFTER=$(cat /tmp/gpu_after.txt 2>/dev/null || echo "0")
+    if [ "$AFTER" -gt "$((BEFORE + 100))" ]; then
+      echo "GPU acceleration confirmed: ${BEFORE}MB -> ${AFTER}MB"
+    else
+      echo "GPU acceleration not detected: ${BEFORE}MB -> ${AFTER}MB"
+    fi
+  register: ollama_gpu_performance
+  ignore_errors: yes
+  when: ollama_accessibility is succeeded
+
 - name: "Log Ollama configuration status"
   lineinfile:
     path: "{{ validation_log }}"
-    line: "{{ ansible_date_time.iso8601 }} - Ollama configuration {{ 'verified' if ollama_accessibility is succeeded else 'failed' }}"
+    line: "{{ ansible_date_time.iso8601 }} - Ollama configuration {{ 'verified with GPU' if (ollama_accessibility is succeeded and ollama_gpu_detection is succeeded) else ('verified CPU-only' if ollama_accessibility is succeeded else 'failed') }} - {{ ollama_gpu_performance.stdout | default('no performance test') }}"

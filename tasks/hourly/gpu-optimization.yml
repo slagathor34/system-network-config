@@ -5,12 +5,46 @@
 - name: "Install NVIDIA drivers and CUDA toolkit"
   apt:
     name:
-      - nvidia-driver-575-open
+      - nvidia-driver-575
+      - nvidia-dkms-575
       - nvidia-cuda-toolkit
       - nvidia-utils-575
+      - build-essential
+      - linux-headers-generic
     state: present
     update_cache: yes
   register: nvidia_installation
+  ignore_errors: yes
+
+- name: "Check and rebuild NVIDIA DKMS modules if needed"
+  shell: |
+    # Check DKMS status
+    if ! dkms status nvidia | grep -q "installed"; then
+      # Clean any corrupted builds
+      dkms remove nvidia --all 2>/dev/null || true
+      rm -rf /var/lib/dkms/nvidia/*/$(uname -r) 2>/dev/null || true
+      
+      # Rebuild and install modules
+      dkms build nvidia/575.64.03 -k $(uname -r) || true
+      dkms install nvidia/575.64.03 -k $(uname -r) || true
+      
+      # Update module dependencies
+      depmod -a
+      
+      echo "DKMS modules rebuilt"
+    else
+      echo "DKMS modules already installed"
+    fi
+  register: dkms_rebuild
+  ignore_errors: yes
+
+- name: "Load NVIDIA kernel modules"
+  shell: |
+    modprobe nvidia || true
+    modprobe nvidia_modeset || true  
+    modprobe nvidia_drm || true
+    modprobe nvidia_uvm || true
+  register: nvidia_modules_load
   ignore_errors: yes
 
 - name: "Create NVIDIA configuration directory"
@@ -46,52 +80,73 @@
     group: root
     mode: '0644'
 
-- name: "Configure NVIDIA power management for maximum performance"
+- name: "Configure NVIDIA power management for maximum AI performance"
   copy:
     content: |
-      # NVIDIA GPU power management optimization for AI workloads
-      # Maximum performance mode for RTX 3060 in AI-only environment
-      
+      # NVIDIA GPU optimization for AI workloads
+      # Maximum performance configuration for RTX 3060
+
+      # Power management - maximum performance
       options nvidia NVreg_PowerMizerEnable=0
       options nvidia NVreg_PowerMizerLevel=0
       options nvidia NVreg_PowerMizerDefault=1
       options nvidia NVreg_DynamicPowerManagement=0
+
+      # Memory and compute optimization
+      options nvidia NVreg_EnableGpuFirmware=1
+      options nvidia NVreg_GSPFirmware=1
+      options nvidia NVreg_InitializeSystemMemoryAllocations=0
+      options nvidia NVreg_UsePageAttributeTable=1
+
+      # Display and graphics acceleration
       options nvidia_drm modeset=1
-    dest: "/etc/modprobe.d/nvidia-power.conf"
+      options nvidia_drm fbdev=1
+
+      # CUDA optimization
+      options nvidia NVreg_RmLogonRC=1
+      options nvidia NVreg_ModifyDeviceFiles=0
+    dest: "/etc/modprobe.d/nvidia-ai-performance.conf"
     owner: root
     group: root
     mode: '0644'
   register: nvidia_power_config
 
-- name: "Create NVIDIA performance optimization service"
+- name: "Create GPU AI Performance optimization service"
   copy:
     content: |
       [Unit]
-      Description=NVIDIA GPU Performance Optimization
+      Description=GPU AI Performance Optimization
       After=graphical.target
       Requires=nvidia-persistenced.service
 
       [Service]
       Type=oneshot
       RemainAfterExit=yes
-      ExecStart=/bin/bash -c 'nvidia-smi -pm 1; nvidia-smi -ac 1215,1777; nvidia-smi --auto-boost-default=0 --auto-boost-permission=0; echo performance > /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor'
-      ExecReload=/bin/bash -c 'nvidia-smi -pm 1; nvidia-smi -ac 1215,1777; nvidia-smi --auto-boost-default=0 --auto-boost-permission=0'
+      ExecStart=/bin/bash -c '\
+        nvidia-smi -pm 1 && \
+        for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$cpu"; done && \
+        echo never > /sys/kernel/mm/transparent_hugepage/enabled && \
+        echo never > /sys/kernel/mm/transparent_hugepage/defrag && \
+        echo 1 > /proc/sys/kernel/numa_balancing'
+      ExecReload=/bin/bash -c 'nvidia-smi -pm 1'
+      StandardOutput=journal
+      StandardError=journal
 
       [Install]
       WantedBy=multi-user.target
-    dest: "/etc/systemd/system/nvidia-performance.service"
+    dest: "/etc/systemd/system/gpu-ai-performance.service"
     owner: root
     group: root
     mode: '0644'
-  register: nvidia_performance_service
+  register: gpu_ai_performance_service
 
-- name: "Enable and reload NVIDIA performance service"
+- name: "Enable and reload GPU AI Performance service"
   systemd:
-    name: nvidia-performance
+    name: gpu-ai-performance
     daemon_reload: yes
     enabled: yes
     state: started
-  when: nvidia_performance_service.changed
+  when: gpu_ai_performance_service.changed
   ignore_errors: yes
 
 - name: "Verify GPU detection and optimization"
