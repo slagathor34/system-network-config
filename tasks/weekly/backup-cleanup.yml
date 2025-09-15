@@ -1,0 +1,41 @@
+---
+# Weekly backup cleanup task
+# Removes netplan backups older than 7 days to prevent disk space issues
+
+- name: "Find netplan backups older than 7 days"
+  find:
+    paths: "/opt/backups/netplan"
+    age: "7d"
+    file_type: directory
+  register: old_backups
+
+- name: "Remove old netplan backups"
+  file:
+    path: "{{ item.path }}"
+    state: absent
+  with_items: "{{ old_backups.files }}"
+  register: cleanup_result
+
+- name: "Log backup cleanup results"
+  lineinfile:
+    path: "/var/log/ansible-pull-network.log"
+    line: "{{ ansible_date_time.iso8601 }} - Backup cleanup: Removed {{ old_backups.files | length }} old backup directories"
+  when: old_backups.files | length > 0
+
+- name: "Ensure backup directory exists"
+  file:
+    path: "/opt/backups/netplan"
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+
+- name: "Check current backup disk usage"
+  shell: "du -sh /opt/backups/netplan/ 2>/dev/null | cut -f1 || echo '0'"
+  register: backup_disk_usage
+  changed_when: false
+
+- name: "Log current backup disk usage"
+  lineinfile:
+    path: "/var/log/ansible-pull-network.log"
+    line: "{{ ansible_date_time.iso8601 }} - Backup directory usage: {{ backup_disk_usage.stdout }}"

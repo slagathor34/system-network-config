@@ -1,0 +1,242 @@
+---
+# Package Management - Ensure essential packages are installed and managed
+# Part of the ansible-pull automation system
+
+# Define package lists for easy maintenance
+- name: "Package Management - Set essential system packages"
+  set_fact:
+    essential_packages:
+      - curl
+      - wget
+      - git
+      - htop
+      - tree
+      - vim
+      - nano
+      - unzip
+      - zip
+      - jq
+      - rsync
+      - screen
+      - tmux
+      - net-tools
+      - dnsutils
+      - iputils-ping
+      - traceroute
+      - telnet
+      - ncdu
+      - iotop
+      - iftop
+      - lsof
+      - strace
+      - tcpdump
+      - ca-certificates
+      - gnupg
+      - lsb-release
+      - apt-transport-https
+      - software-properties-common
+
+- name: "Package Management - Set development packages"
+  set_fact:
+    development_packages:
+      - build-essential
+      - make
+      - gcc
+      - g++
+      - gdb
+      - python3
+      - python3-pip
+      - python3-venv
+      - python3-dev
+      - nodejs
+      - npm
+
+- name: "Package Management - Set monitoring packages"
+  set_fact:
+    monitoring_packages:
+      - rsyslog
+      - logrotate
+      - cron
+      - systemd-timesyncd
+      - fail2ban
+      - ufw
+
+- name: "Package Management - Set network packages"
+  set_fact:
+    network_packages:
+      - openssh-server
+      - openssh-client
+      - rsync
+      - sshpass
+      - netplan.io
+      - networkd-dispatcher
+      - bridge-utils
+      - vlan
+      - ethtool
+
+- name: "Package Management - Set storage packages"
+  set_fact:
+    storage_packages:
+      - btrfs-progs
+      - smartmontools
+      - hdparm
+      - nvme-cli
+      - lvm2
+      - cryptsetup
+      - nfs-common
+      - nfs-kernel-server
+
+# Optional packages that can be easily enabled/disabled
+- name: "Package Management - Set optional packages"
+  set_fact:
+    optional_packages:
+      - ansible
+      - ansible-core
+      - cockpit
+      - cockpit-machines
+      - cockpit-networkmanager
+      - cockpit-packagekit
+      - cockpit-podman
+    optional_packages_enabled: true  # Set to false to skip optional packages
+
+# Docker packages (separate due to special repository requirements)
+- name: "Package Management - Set docker packages"
+  set_fact:
+    docker_packages:
+      - docker-ce
+      - docker-ce-cli
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    docker_packages_enabled: true  # Set to false to skip Docker packages
+
+# Custom/third-party packages (not available in standard repositories)
+- name: "Package Management - Set custom packages"
+  set_fact:
+    custom_packages:
+      # Add custom packages here that require special installation
+      # - ollama  # Requires special installation method
+    custom_packages_enabled: false  # Set to true when you have custom packages
+
+# Package removal list (packages to explicitly remove)
+- name: "Package Management - Set packages to remove"
+  set_fact:
+    packages_to_remove:
+      - snapd  # Remove if you don't want snap packages
+      # Add any unwanted packages here
+    package_removal_enabled: false  # Set to true to enable package removal
+
+# Update package cache
+- name: "Package Management - Update apt package cache"
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600  # Cache valid for 1 hour
+  become: yes
+
+# Install essential packages
+- name: "Package Management - Install essential system packages"
+  apt:
+    name: "{{ essential_packages }}"
+    state: present
+  become: yes
+  register: essential_install_result
+
+# Install development packages
+- name: "Package Management - Install development packages"
+  apt:
+    name: "{{ development_packages }}"
+    state: present
+  become: yes
+  register: dev_install_result
+
+# Install monitoring packages
+- name: "Package Management - Install monitoring packages"
+  apt:
+    name: "{{ monitoring_packages }}"
+    state: present
+  become: yes
+  register: monitoring_install_result
+
+# Install network packages
+- name: "Package Management - Install network packages"
+  apt:
+    name: "{{ network_packages }}"
+    state: present
+  become: yes
+  register: network_install_result
+
+# Install storage packages
+- name: "Package Management - Install storage packages"
+  apt:
+    name: "{{ storage_packages }}"
+    state: present
+  become: yes
+  register: storage_install_result
+
+# Install optional packages (if enabled)
+- name: "Package Management - Install optional packages"
+  apt:
+    name: "{{ optional_packages }}"
+    state: present
+  become: yes
+  register: optional_install_result
+  when: optional_packages_enabled | default(true) | bool
+
+# Install Docker packages (if enabled)
+- name: "Package Management - Install Docker packages"
+  apt:
+    name: "{{ docker_packages }}"
+    state: present
+  become: yes
+  register: docker_install_result
+  when: docker_packages_enabled | default(true) | bool
+  ignore_errors: yes  # Docker may require special repository setup
+
+# Install custom packages (if enabled)
+- name: "Package Management - Install custom packages"
+  apt:
+    name: "{{ custom_packages }}"
+    state: present
+  become: yes
+  register: custom_install_result
+  when: custom_packages_enabled | default(false) | bool and custom_packages | length > 0
+
+# Remove unwanted packages (if enabled)
+- name: "Package Management - Remove unwanted packages"
+  apt:
+    name: "{{ packages_to_remove }}"
+    state: absent
+    purge: yes
+    autoremove: yes
+  become: yes
+  register: removal_result
+  when: package_removal_enabled | default(false) | bool
+
+# Clean up package cache
+- name: "Package Management - Clean package cache and autoremove"
+  apt:
+    autoremove: yes
+    autoclean: yes
+  become: yes
+  register: cleanup_result
+
+# Log package management results
+- name: "Package Management - Log installation results"
+  debug:
+    msg: |
+      Package Management Results:
+      - Essential packages: {{ 'UPDATED' if essential_install_result.changed else 'NO CHANGES' }}
+      - Development packages: {{ 'UPDATED' if dev_install_result.changed else 'NO CHANGES' }}
+      - Monitoring packages: {{ 'UPDATED' if monitoring_install_result.changed else 'NO CHANGES' }}
+      - Network packages: {{ 'UPDATED' if network_install_result.changed else 'NO CHANGES' }}
+      - Storage packages: {{ 'UPDATED' if storage_install_result.changed else 'NO CHANGES' }}
+      - Optional packages: {{ 'UPDATED' if (optional_packages_enabled and optional_install_result.changed) else 'SKIPPED/NO CHANGES' }}
+      - Docker packages: {{ 'UPDATED' if (docker_packages_enabled and docker_install_result.changed) else 'SKIPPED/NO CHANGES' }}
+      - Custom packages: {{ 'UPDATED' if (custom_packages_enabled and custom_install_result.changed) else 'SKIPPED/NO CHANGES' }}
+      - Package removal: {{ 'EXECUTED' if (package_removal_enabled and removal_result.changed) else 'DISABLED/NO CHANGES' }}
+      - Cleanup: {{ 'PERFORMED' if cleanup_result.changed else 'NO CLEANUP NEEDED' }}
+
+# Send log message about package management
+- name: "Package Management - Send log message"
+  shell: |
+    logger -p user.info -t "ansible-pull-packages" "Package management completed - Updates: {{ 'Yes' if (essential_install_result.changed or dev_install_result.changed or monitoring_install_result.changed or network_install_result.changed or storage_install_result.changed or (optional_packages_enabled and optional_install_result.changed) or (docker_packages_enabled and docker_install_result.changed) or (custom_packages_enabled and custom_install_result.changed)) else 'No' }}"
+  become: yes

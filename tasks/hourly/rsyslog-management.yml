@@ -1,0 +1,73 @@
+---
+# Rsyslog Management - Forward all system logs to central syslog server
+# Part of the ansible-pull automation system
+
+- name: "Rsyslog Management - Ensure rsyslog is installed"
+  apt:
+    name: rsyslog
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: "Rsyslog Management - Create rsyslog forwarding configuration"
+  copy:
+    content: |
+      # Forward warning level and above system logs to storage.brainstormes.org syslog server
+      # Configured by ansible-pull automation
+      
+      # Forward only warning (4) and above severity messages to remote syslog server
+      # Severity levels: 0=emerg, 1=alert, 2=crit, 3=err, 4=warning, 5=notice, 6=info, 7=debug
+      *.warning @storage.brainstormes.org:514
+      
+      # Continue processing local logging rules after forwarding
+      # Local logs still capture all severity levels for immediate troubleshooting
+      # Remove the line below if you want to disable local logging
+      # & stop
+    dest: /etc/rsyslog.d/10-remote-syslog.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: yes
+  become: yes
+  notify: restart rsyslog
+
+- name: "Rsyslog Management - Ensure rsyslog service is enabled and running"
+  systemd:
+    name: rsyslog
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  become: yes
+
+- name: "Rsyslog Management - Test rsyslog configuration"
+  command: rsyslogd -N1
+  register: rsyslog_test
+  failed_when: rsyslog_test.rc != 0
+  become: yes
+
+- name: "Rsyslog Management - Verify remote syslog connectivity"
+  wait_for:
+    host: storage.brainstormes.org
+    port: 514
+    timeout: 10
+  register: syslog_connectivity
+  ignore_errors: yes
+
+- name: "Rsyslog Management - Log connectivity status"
+  debug:
+    msg: |
+      Rsyslog configuration status:
+      - Configuration test: {{ 'PASSED' if rsyslog_test.rc == 0 else 'FAILED' }}
+      - Remote syslog connectivity: {{ 'AVAILABLE' if syslog_connectivity is succeeded else 'UNAVAILABLE' }}
+      - Filter level: Warning and above (emerg, alert, crit, err, warning)
+      - Logs will be forwarded to storage.brainstormes.org:514 (UDP)
+
+- name: "Rsyslog Management - Send test warning message"
+  shell: logger -p user.warning -t "ansible-pull-rsyslog" "Rsyslog forwarding configured successfully - Warning level test message from $(hostname)"
+  become: yes
+  when: syslog_connectivity is succeeded
+
+- name: "Rsyslog Management - Send test info message (local only)"
+  shell: logger -p user.info -t "ansible-pull-rsyslog" "Info level message - This should only appear in local logs, not forwarded to remote syslog"
+  become: yes
+  when: syslog_connectivity is succeeded

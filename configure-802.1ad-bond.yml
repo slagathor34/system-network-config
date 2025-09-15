@@ -28,7 +28,8 @@
         dhcp6: true
     
     # Backup directory for rollback
-    backup_dir: "/etc/netplan/ansible-backup"
+    backup_dir: "/opt/backups/netplan"
+    date_stamp: "{{ ansible_date_time.date }}"
     timestamp: "{{ ansible_date_time.epoch }}"
 
   tasks:
@@ -38,18 +39,20 @@
         state: directory
         mode: '0755'
 
-    - name: Check if backup already exists for this session
+    - name: Check if daily backup already exists
       stat:
-        path: "{{ backup_dir }}/{{ timestamp }}"
-      register: backup_exists
+        path: "{{ backup_dir }}/{{ date_stamp }}"
+      register: daily_backup_exists
 
-    - name: Backup current netplan configuration
+    - name: Backup current netplan configuration (daily backup)
       shell: |
-        mkdir -p "{{ backup_dir }}/{{ timestamp }}/netplan"
-        cp -r /etc/netplan/* "{{ backup_dir }}/{{ timestamp }}/netplan/" 2>/dev/null || true
-        ls -la "{{ backup_dir }}/{{ timestamp }}/netplan/" > "{{ backup_dir }}/{{ timestamp }}/backup_manifest.txt"
+        mkdir -p "{{ backup_dir }}/{{ date_stamp }}/netplan"
+        find /etc/netplan -maxdepth 1 -name "*.yaml" -o -name "*.yml" -exec cp {} "{{ backup_dir }}/{{ date_stamp }}/netplan/" \; 2>/dev/null || true
+        find /etc/netplan -maxdepth 1 -name "*.conf" -exec cp {} "{{ backup_dir }}/{{ date_stamp }}/netplan/" \; 2>/dev/null || true
+        ls -la "{{ backup_dir }}/{{ date_stamp }}/netplan/" > "{{ backup_dir }}/{{ date_stamp }}/backup_manifest.txt"
+        echo "{{ ansible_date_time.iso8601 }}" > "{{ backup_dir }}/{{ date_stamp }}/backup_timestamp.txt"
       register: backup_result
-      when: not backup_exists.stat.exists
+      when: not daily_backup_exists.stat.exists
       changed_when: true
 
     - name: Disable 802.1ad dispatcher script to use standard 802.1Q VLANs
@@ -59,9 +62,9 @@
       notify: Restart NetworkManager
 
     - name: Store current NetworkManager connections for rollback
-      shell: nmcli -t connection show | grep -E "(bond0|enp9s0f0|enp9s0f1|bond0\.)" > {{ backup_dir }}/{{ timestamp }}/nm_connections.txt
+      shell: nmcli -t connection show | grep -E "(bond0|enp9s0f0|enp9s0f1|bond0\.)" > {{ backup_dir }}/{{ date_stamp }}/nm_connections.txt
       ignore_errors: yes
-      when: not backup_exists.stat.exists
+      when: not daily_backup_exists.stat.exists
       changed_when: false
 
     - name: Check if bond0 already exists
@@ -288,11 +291,11 @@
     - name: Create rollback script
       template:
         src: rollback_script.j2
-        dest: "{{ backup_dir }}/{{ timestamp }}/rollback.sh"
+        dest: "{{ backup_dir }}/{{ date_stamp }}/rollback.sh"
         mode: '0755'
       vars:
-        backup_path: "{{ backup_dir }}/{{ timestamp }}"
-      when: not backup_exists.stat.exists
+        backup_path: "{{ backup_dir }}/{{ date_stamp }}"
+      when: not daily_backup_exists.stat.exists
 
   handlers:
     - name: verify_bond_status
@@ -314,8 +317,8 @@
           - Mode: {{ bond_mode }} (LACP)
           - Slave NICs: {{ primary_nic }}, {{ secondary_nic }}
           - VLANs configured: {{ vlans | map(attribute='id') | list | join(', ') }}
-          - Backup created: {{ backup_dir }}/{{ timestamp }}
-          - Rollback script: {{ backup_dir }}/{{ timestamp }}/rollback.sh
+          - Backup created: {{ backup_dir }}/{{ date_stamp }}
+          - Rollback script: {{ backup_dir }}/{{ date_stamp }}/rollback.sh
 
     - name: Save configuration state
       copy:
@@ -325,6 +328,6 @@
           BOND_MODE={{ bond_mode }}
           PRIMARY_NIC={{ primary_nic }}
           SECONDARY_NIC={{ secondary_nic }}
-          BACKUP_DIR={{ backup_dir }}/{{ timestamp }}
-        dest: "{{ backup_dir }}/{{ timestamp }}/config_state.conf"
-      when: not backup_exists.stat.exists
+          BACKUP_DIR={{ backup_dir }}/{{ date_stamp }}
+        dest: "{{ backup_dir }}/{{ date_stamp }}/config_state.conf"
+      when: not daily_backup_exists.stat.exists

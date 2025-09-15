@@ -67,3 +67,33 @@
     - name: Display detailed bond information
       debug:
         var: detailed_bond_info.stdout_lines
+
+    - name: "Validate 192.168.6.0/24 network exclusivity for VLAN 500"
+      block:
+        - name: "Check which interfaces have 192.168.6.x IPs"
+          shell: |
+            ip addr show | grep -E "inet 192\.168\.6\.[0-9]+/24" | awk '{print $NF}' | sort -u
+          register: interfaces_with_vlan500_ip
+          changed_when: false
+          ignore_errors: yes
+
+        - name: "Verify only bond0.500 uses 192.168.6.0/24"
+          assert:
+            that:
+              - interfaces_with_vlan500_ip.stdout_lines | length == 1
+              - interfaces_with_vlan500_ip.stdout_lines[0] == "bond0.500"
+            fail_msg: "CRITICAL: 192.168.6.0/24 network found on unauthorized interface(s): {{ interfaces_with_vlan500_ip.stdout_lines | difference(['bond0.500']) | join(', ') }}"
+            success_msg: "VALIDATED: 192.168.6.0/24 network is exclusive to VLAN 500 (bond0.500)"
+
+        - name: "Check routing exclusivity for 192.168.6.0/24"
+          shell: |
+            ip route show | grep "192\.168\.6\.0/24" | grep -v "bond0\.500" | wc -l
+          register: unauthorized_routes_count
+          changed_when: false
+
+        - name: "Verify no unauthorized routes to 192.168.6.0/24"
+          assert:
+            that:
+              - unauthorized_routes_count.stdout | int == 0
+            fail_msg: "CRITICAL: Found {{ unauthorized_routes_count.stdout }} unauthorized route(s) to 192.168.6.0/24"
+            success_msg: "VALIDATED: All routes to 192.168.6.0/24 use VLAN 500 exclusively"

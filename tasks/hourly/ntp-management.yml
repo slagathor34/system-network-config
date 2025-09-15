@@ -1,0 +1,80 @@
+---
+# NTP Management - Configure time synchronization for Los Angeles timezone
+# Part of the ansible-pull automation system
+
+- name: "NTP Management - Set timezone to Los Angeles"
+  timezone:
+    name: America/Los_Angeles
+  become: yes
+  notify: restart systemd-timesyncd
+
+- name: "NTP Management - Configure systemd-timesyncd with reliable NTP servers"
+  copy:
+    content: |
+      # NTP configuration for Los Angeles timezone
+      # Configured by ansible-pull automation
+      
+      [Time]
+      # Primary NTP servers (geographically close to Los Angeles)
+      NTP=time.nist.gov time-c-b.nist.gov time.cloudflare.com
+      
+      # Fallback NTP servers
+      FallbackNTP=pool.ntp.org 0.pool.ntp.org 1.pool.ntp.org 2.pool.ntp.org 3.pool.ntp.org
+      
+      # Sync parameters optimized for accuracy
+      RootDistanceMaxSec=5
+      PollIntervalMinSec=32
+      PollIntervalMaxSec=2048
+      ConnectionRetrySec=30
+      SaveIntervalSec=60
+    dest: /etc/systemd/timesyncd.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: yes
+  become: yes
+  notify: restart systemd-timesyncd
+
+- name: "NTP Management - Ensure systemd-timesyncd service is enabled and running"
+  systemd:
+    name: systemd-timesyncd
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  become: yes
+
+- name: "NTP Management - Force immediate time synchronization"
+  command: timedatectl set-ntp true
+  become: yes
+
+- name: "NTP Management - Wait for time synchronization"
+  wait_for:
+    timeout: 30
+  delegate_to: localhost
+
+- name: "NTP Management - Get current time status"
+  command: timedatectl status
+  register: time_status
+  become: yes
+
+- name: "NTP Management - Check NTP synchronization status"
+  command: timedatectl show-timesync --all
+  register: timesync_status
+  become: yes
+
+- name: "NTP Management - Log time configuration status"
+  debug:
+    msg: |
+      NTP and timezone configuration status:
+      Current time: {{ ansible_date_time.iso8601 }}
+      Timezone: {{ ansible_date_time.tz }}
+      NTP sync: {{ 'ENABLED' if ('System clock synchronized: yes' in time_status.stdout) else 'DISABLED' }}
+      Service: {{ 'ACTIVE' if ('NTP service: active' in time_status.stdout) else 'INACTIVE' }}
+      
+      Time sync details:
+      {{ timesync_status.stdout }}
+
+- name: "NTP Management - Send log message about time sync"
+  shell: |
+    logger -t "ansible-pull-ntp" "NTP configuration updated - Timezone: {{ ansible_date_time.tz }}, Current time: {{ ansible_date_time.iso8601 }}"
+  become: yes

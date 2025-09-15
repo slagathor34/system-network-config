@@ -9,7 +9,7 @@
   gather_facts: yes
   vars:
     repo_url: "https://github.com/slagathor34/system-network-config.git"
-    config_backup_dir: "/etc/netplan/ansible-backup"
+    config_backup_dir: "/opt/backups/netplan"
     validation_log: "/var/log/ansible-pull-network.log"
     revert_threshold_minutes: 60  # Revert if issues persist for more than 60 minutes
     
@@ -35,8 +35,14 @@
     # Hourly Tasks - Core System Configuration Management
     - name: "Execute hourly configuration tasks"
       block:
+        - name: "Package installation and management"
+          include_tasks: tasks/hourly/package-management.yml
+
         - name: "Network validation and configuration"
           include_tasks: tasks/hourly/network-validation.yml
+
+        - name: "Network subnet isolation validation"
+          include_tasks: tasks/hourly/network-subnet-validation.yml
 
         - name: "Docker configuration management"
           include_tasks: tasks/hourly/docker-management.yml
@@ -61,6 +67,18 @@
 
         - name: "Docker AI MCP toolkit and gateway management"
           include_tasks: tasks/hourly/mcp-management.yml
+
+        - name: "Rsyslog configuration and management"
+          include_tasks: tasks/hourly/rsyslog-management.yml
+
+        - name: "NTP time synchronization and timezone management"
+          include_tasks: tasks/hourly/ntp-management.yml
+
+        - name: "Dockge Docker Compose stack manager"
+          include_tasks: tasks/hourly/dockge-management.yml
+
+        - name: "Nextcloud trusted domains management"
+          include_tasks: tasks/hourly/nextcloud-management.yml
 
       rescue:
         - name: "Log hourly task failure"
@@ -91,6 +109,9 @@
     # Weekly Tasks - System Updates and Maintenance
     - name: "Execute weekly update tasks"
       block:
+        - name: "Clean up old netplan backups"
+          include_tasks: tasks/weekly/backup-cleanup.yml
+
         - name: "System package updates and reboot"
           include_tasks: tasks/weekly/system-updates.yml
 
@@ -112,3 +133,20 @@
         path: "{{ validation_log }}"
         line: "{{ ansible_date_time.iso8601 }} - VALIDATION FAILED"
       listen: "validation failed"
+
+    - name: restart rsyslog
+      systemd:
+        name: rsyslog
+        state: restarted
+      become: yes
+
+    - name: restart systemd-timesyncd
+      systemd:
+        name: systemd-timesyncd
+        state: restarted
+      become: yes
+
+    - name: reload systemd
+      systemd:
+        daemon_reload: yes
+      become: yes

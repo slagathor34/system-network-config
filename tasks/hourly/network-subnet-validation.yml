@@ -1,0 +1,111 @@
+---
+# Network subnet validation and enforcement tasks
+# Ensures 192.168.6.0/24 is only used by VLAN 500 interface
+# These tasks run hourly to maintain network isolation
+
+- name: "Check all interfaces for 192.168.6.0/24 usage"
+  shell: |
+    ip addr show | grep -E "inet 192\.168\.6\.[0-9]+/24" | awk '{print $NF}' | sort -u
+  register: vlan500_interfaces_check
+  changed_when: false
+  ignore_errors: yes
+
+- name: "Verify only bond0.500 uses 192.168.6.0/24"
+  fail:
+    msg: "CRITICAL: 192.168.6.0/24 network found on unauthorized interface(s): {{ vlan500_interfaces_check.stdout_lines | difference(['bond0.500']) | join(', ') }}"
+  when:
+    - vlan500_interfaces_check.stdout_lines | length > 1 or (vlan500_interfaces_check.stdout_lines | length == 1 and vlan500_interfaces_check.stdout_lines[0] != 'bond0.500')
+
+- name: "Check routing table for 192.168.6.0/24 exclusivity"
+  shell: |
+    ip route show | grep "192\.168\.6\.0/24" | grep -v "bond0\.500" || echo "CLEAN"
+  register: route_exclusivity_check
+  changed_when: false
+  ignore_errors: yes
+
+- name: "Remove unauthorized routes to 192.168.6.0/24"
+  shell: |
+    ip route del {{ item }}
+  with_items: "{{ route_exclusivity_check.stdout_lines | select('match', '192\\.168\\.6\\.0/24.*') | select('match', '(?!.*bond0\\.500).*') | list }}"
+  when:
+    - route_exclusivity_check.stdout != "CLEAN"
+    - route_exclusivity_check.stdout_lines | select('match', '192\\.168\\.6\\.0/24.*') | select('match', '(?!.*bond0\\.500).*') | list | length > 0
+  ignore_errors: yes
+
+- name: "Verify VLAN 500 configuration is correct"
+  shell: |
+    nmcli -t connection show bond0.500 | grep -E "(ipv4.addresses|ipv4.method)"
+  register: vlan500_config_check
+  changed_when: false
+  ignore_errors: yes
+
+- name: "Check for IP conflicts on other VLANs"
+  shell: |
+    for vlan in 200 700; do
+      ip addr show bond0.$vlan 2>/dev/null | grep -E "inet 192\.168\.6\.[0-9]+/24" && echo "CONFLICT: VLAN $vlan has 192.168.6.x IP"
+    done
+  register: vlan_conflict_check
+  changed_when: false
+  ignore_errors: yes
+
+- name: "Remove conflicting IPs from other VLANs"
+  shell: |
+    for vlan in 200 700; do
+      conflicting_ip=$(ip addr show bond0.$vlan 2>/dev/null | grep -E "inet 192\.168\.6\.[0-9]+/24" | awk '{print $2}' | head -1)
+      if [ -n "$conflicting_ip" ]; then
+        ip addr del $conflicting_ip dev bond0.$vlan
+        echo "Removed conflicting IP $conflicting_ip from bond0.$vlan"
+      fi
+    done
+  register: conflict_removal_result
+  when:
+    - vlan_conflict_check.stdout is defined
+    - "'CONFLICT:' in vlan_conflict_check.stdout"
+  changed_when: "'Removed conflicting IP' in conflict_removal_result.stdout"
+
+- name: "Verify VLAN 500 has correct IP configuration"
+  shell: |
+    current_ip=$(ip addr show bond0.500 | grep "inet " | awk '{print $2}')
+    if [ "$current_ip" = "192.168.6.77/24" ]; then
+      echo "VALID: VLAN 500 has correct IP: $current_ip"
+      exit 0
+    else
+      echo "INVALID: VLAN 500 IP is $current_ip, expected 192.168.6.77/24"
+      exit 1
+    fi
+  register: vlan500_ip_validation
+  changed_when: false
+
+- name: "Final validation - verify 192.168.6.0/24 network exclusivity"
+  shell: |
+    # Check only bond0.500 has 192.168.6.x IP
+    interfaces_with_ip=$(ip addr show | grep -E "inet 192\.168\.6\.[0-9]+/24" | awk '{print $NF}' | sort -u)
+    routes_to_network=$(ip route show | grep "192\.168\.6\.0/24" | grep -v "bond0\.500" | wc -l)
+
+    echo "Interfaces with 192.168.6.x IPs: $interfaces_with_ip"
+    echo "Unauthorized routes to 192.168.6.0/24: $routes_to_network"
+
+    if [ "$interfaces_with_ip" = "bond0.500" ] && [ "$routes_to_network" = "0" ]; then
+      echo "VALIDATION PASSED: 192.168.6.0/24 network is exclusive to VLAN 500"
+      exit 0
+    else
+      echo "VALIDATION FAILED: 192.168.6.0/24 network exclusivity not maintained"
+      exit 1
+    fi
+  register: final_validation
+  changed_when: false
+
+- name: "Log network subnet validation status"
+  lineinfile:
+    path: "{{ validation_log }}"
+    line: "{{ ansible_date_time.iso8601 }} - Network subnet validation {{ 'PASSED' if final_validation.rc == 0 else 'FAILED' }} - 192.168.6.0/24 exclusively on VLAN 500: {{ final_validation.stdout_lines[-1] if final_validation.stdout_lines else 'No output' }}"
+    create: yes
+
+- name: "Log network interface status for monitoring"
+  shell: |
+    echo "=== Network Interface Status - {{ ansible_date_time.iso8601 }} ===" >> "{{ validation_log }}"
+    ip addr show bond0.500 | grep "inet " >> "{{ validation_log }}"
+    ip route show | grep "192.168.6" >> "{{ validation_log }}"
+    echo "========================================" >> "{{ validation_log }}"
+  changed_when: false
+  ignore_errors: yes
