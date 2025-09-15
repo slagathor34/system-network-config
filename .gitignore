@@ -1,0 +1,41 @@
+# Backup directories and generated files
+/opt/backups/
+/etc/netplan/ansible-backup/
+*.backup
+*.bak
+backup_*/
+
+# Log files
+*.log
+/var/log/
+ansible-pull*.log
+
+# Environment and sensitive files
+.env
+*.key
+*.pem
+secrets.yml
+vault.yml
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*~
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-*
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Ansible specific
+.ansible/
+*.retry
+.vault_pass
+
+# Runtime directories that could be created by ansible-pull
+/opt/ansible-pull-network/
